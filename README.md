@@ -57,6 +57,16 @@ Opcjonalnie w `.env`:
 - `FAST_WINDOW=1-3 19:55-20:35 10` — dni miesiąca, godziny i co ile sekund (minimum 5) sprawdzać autorezerwacje,
   np. gdy salon otwiera zapisy 1–3 dnia miesiąca ok. 20:00. Poza oknem bot budzi się dokładnie na jego początek.
 
+## Znajomi (wspólny bot)
+
+Właściciel (`TELEGRAM_CHAT_ID`) zaprasza znajomych komendą `/invite` (jednorazowy kod; znajomy wysyła `/start KOD`).
+Każdy znajomy podłącza **własne** konto Booksy (`/token WARTOŚĆ`, wiadomość jest od razu usuwana) — regulamin Booksy
+to jedno konto na osobę. Znajomy ma osobne powiadomienia i rezerwacje, limit 3 powiadomień i 1 autorezerwacji.
+Właściciel ma pierwszeństwo: w każdym cyklu jego autorezerwacje idą pierwsze, znajomi dostają kolejne wolne terminy.
+`/users` – lista, `/kick ID` – usunięcie (token i powiadomienia).
+
+Uwaga: wszystkie konta łączą się z jednego IP, a tokeny znajomych leżą w bazie bota — zapraszaj tylko zaufane osoby.
+
 ## Home Assistant OS (dodatek)
 
 Bot może działać 24/7 jako lokalny dodatek HA (`homeassistant-addon/`). Wymaga dodatku **Samba share** w HA.
