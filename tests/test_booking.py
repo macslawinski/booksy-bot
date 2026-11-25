@@ -251,33 +251,22 @@ def test_autobook_button_fits_telegram_limit():
     assert len(f"/autoon {worst.encode()}".encode()) <= 64
 
 
-def test_rolling_autobook_books_one_visit_per_month(auto_bot):
+def test_autobook_one_visit_per_month_of_the_range(auto_bot):
     from test_bot import SLOTS, add
     from booksy_bot.bot import check_monitor
     _, storage = auto_bot
-    m = add(storage, autobook=True)                             # rolling window (no date_to)
+    m = add(storage, autobook=True, date_from="2026-11-27", date_to="2026-12-05")   # range over two months
     two_months = copy.deepcopy(SLOTS)
     two_months["time_slots"].append({"date": "2026-12-03", "slots": [{"t": "10:00", "p": ""}], "working_day": None})
-    m = storage.add_monitor(m.chat_id, 100001, "Salon", "u", 300001, "S", -1, 30, autobook=True)
-    storage.deactivate(m.chat_id, 1)
     client, calls = booksy(slots=two_months)
     msg = asyncio.run(check_monitor(client, storage, m, NOW.date()))
-    assert "Zarezerwowano 27.11 14:00" in msg and "kolejnym miesiącu" in msg
-    assert storage.active_monitors()[0].autobook == 1           # keeps going
-    asyncio.run(check_monitor(client, storage, m, NOW.date()))   # November taken -> December
-    asyncio.run(check_monitor(client, storage, m, NOW.date()))   # both taken -> nothing
+    assert "Zarezerwowano 27.11 14:00" in msg and "pozostałych miesięcy" in msg
+    assert storage.active_monitors()[0].autobook == 1           # December still open
+    msg = asyncio.run(check_monitor(client, storage, m, NOW.date()))
+    assert "Zarezerwowano 03.12 10:00" in msg
+    assert storage.active_monitors() == []                      # every month has a visit: done
     booked = [b["subbookings"][0]["booked_from"] for p, b in calls if p == BOOK_PATH]
     assert booked == ["2026-11-27 14:00", "2026-12-03 10:00"]
-
-
-def test_typed_number_of_days_is_rolling_window(auto_bot):
-    from test_bot import commands, run
-    bot, _ = auto_bot
-    run(bot, "/pick 100001 300001")
-    times = run(bot, "90")
-    assert commands(times)[0] == "/find 100001 300001 -1 90 0 1440"
-    run(bot, "/pick 100001 300001")
-    assert "1–92" in run(bot, "93")
 
 
 def test_fast_window(monkeypatch):
