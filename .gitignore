@@ -1,0 +1,10 @@
+*.har
+.env
+.venv/
+__pycache__/
+*.egg-info/
+*.sqlite3
+luxmed-bot/
+.claude/
+luxmed-bot-analiza.md
+CLAUDE.md

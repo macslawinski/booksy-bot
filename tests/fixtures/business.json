@@ -1,0 +1,146 @@
+{
+ "business": {
+  "id": 100001,
+  "name": "Salon Testowy",
+  "slug": "salon-testowy",
+  "booking_mode": "A",
+  "staff": [
+   {
+    "id": 200001,
+    "name": "Pracownik 1",
+    "type": "S",
+    "visible": true,
+    "active": true,
+    "description": null,
+    "staff_user_exists": true,
+    "photo": null,
+    "photo_url": null,
+    "order": 0,
+    "reviews_rank_score": 0.0,
+    "business": {
+     "id": 100001,
+     "name": "Salon Testowy"
+    },
+    "position": "",
+    "bookmarked": false
+   }
+  ],
+  "service_categories": [
+   {
+    "id": null,
+    "name": "",
+    "order": 0,
+    "show_first": -1,
+    "services": [
+     {
+      "id": 400001,
+      "name": "Strzyżenie Męskie",
+      "active": true,
+      "order": 0,
+      "staffer_id": [
+       200001
+      ],
+      "variants": [
+       {
+        "id": 300001,
+        "duration": 30,
+        "price": 60.0,
+        "type": "X",
+        "deposit": 0.0,
+        "deposit_tax": 0.0,
+        "prepayment": 0.0,
+        "prepayment_tax": 0.0,
+        "promotion": null,
+        "label": "",
+        "combo_children": [],
+        "staffer_id": [
+         200001
+        ],
+        "service_price": "60,00 zł",
+        "omnibus_price": null
+       }
+      ],
+      "is_available_for_customer_booking": true,
+      "is_online_service": false,
+      "combo_type": null,
+      "price": 60.0,
+      "type": "X",
+      "service_price": "60,00 zł"
+     },
+     {
+      "id": 400002,
+      "name": "Strzyżenie Meskie Maszynka",
+      "active": true,
+      "order": 1,
+      "staffer_id": [
+       200001
+      ],
+      "variants": [
+       {
+        "id": 300002,
+        "duration": 15,
+        "price": 50.0,
+        "type": "X",
+        "deposit": 0.0,
+        "deposit_tax": 0.0,
+        "prepayment": 0.0,
+        "prepayment_tax": 0.0,
+        "promotion": null,
+        "label": "",
+        "combo_children": [],
+        "staffer_id": [
+         200001
+        ],
+        "service_price": "50,00 zł",
+        "omnibus_price": null
+       }
+      ],
+      "is_available_for_customer_booking": true,
+      "is_online_service": false,
+      "combo_type": null,
+      "price": 50.0,
+      "type": "X",
+      "service_price": "50,00 zł"
+     },
+     {
+      "id": 400003,
+      "name": "Strzyżenie Dziecięce",
+      "active": true,
+      "order": 2,
+      "staffer_id": [
+       200001
+      ],
+      "variants": [
+       {
+        "id": 300003,
+        "duration": 15,
+        "price": 50.0,
+        "type": "X",
+        "deposit": 0.0,
+        "deposit_tax": 0.0,
+        "prepayment": 0.0,
+        "prepayment_tax": 0.0,
+        "promotion": null,
+        "label": "",
+        "combo_children": [],
+        "staffer_id": [
+         200001
+        ],
+        "service_price": "50,00 zł",
+        "omnibus_price": null
+       }
+      ],
+      "is_available_for_customer_booking": true,
+      "is_online_service": false,
+      "combo_type": null,
+      "price": 50.0,
+      "type": "X",
+      "service_price": "50,00 zł"
+     }
+    ]
+   }
+  ],
+  "url": "100001_salon-testowy_fryzjer_10729_warszawa"
+ },
+ "legal_footer_visible": true
+}
