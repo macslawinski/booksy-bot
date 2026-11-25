@@ -24,6 +24,14 @@ create table if not exists current_slot(
     slot text not null,
     primary key (monitor_id, slot)
 );
+create table if not exists booking_attempt(   -- one booking per salon and start time, ever (no double booking)
+    business_id integer not null,
+    slot text not null,                       -- ISO start, Europe/Warsaw
+    status text not null,                     -- pending / confirmed / failed / unknown
+    appointment_uid text,
+    updated_at text not null default current_timestamp,
+    primary key (business_id, slot)
+);
 """
 # Added after the first release; added to older DBs by Storage._migrate.
 NEW_COLUMNS = {
@@ -31,6 +39,7 @@ NEW_COLUMNS = {
     "date_to": "text",
     "time_from": "integer not null default 0",            # slot start, minutes after midnight, inclusive
     "time_to": f"integer not null default {DAY_END}",
+    "autobook": "integer not null default 0",             # 1 = book the first free slot without asking
 }
 
 
@@ -49,10 +58,11 @@ class Monitor:
     date_to: str | None = None
     time_from: int = 0
     time_to: int = DAY_END
+    autobook: int = 0
 
 
 COLUMNS = ("id, chat_id, business_id, business_name, business_url, variant_id, service_name, staffer_id, days, "
-           "date_from, date_to, time_from, time_to")
+           "date_from, date_to, time_from, time_to, autobook")
 
 
 class Storage:
@@ -75,9 +85,9 @@ class Storage:
 
     def add_monitor(self, chat_id: int, business_id: int, business_name: str, business_url: str, variant_id: int,
                     service_name: str, staffer_id: int, days: int, date_from: str | None = None,
-                    date_to: str | None = None, time_from: int = 0, time_to: int = DAY_END) -> Monitor:
+                    date_to: str | None = None, time_from: int = 0, time_to: int = DAY_END, autobook: bool = False) -> Monitor:
         m = Monitor(0, chat_id, business_id, business_name, business_url, variant_id, service_name, staffer_id, days,
-                    date_from, date_to, time_from, time_to)
+                    date_from, date_to, time_from, time_to, int(autobook))
         values = list(vars(m).values())[1:]
         cur = self.db.execute(
             f"insert into monitor({COLUMNS.removeprefix('id, ')}) values ({','.join('?' * len(values))})", values)
@@ -114,3 +124,26 @@ class Storage:
         self.db.execute("update monitor set checked_at = current_timestamp where id = ?", (monitor_id,))
         self.db.commit()
         return sorted(current - previous), first
+
+    def start_booking(self, business_id: int, slot: str) -> str | None:
+        """Claim the slot for one booking attempt. Returns None when claimed, else the blocking status.
+        Only a 'failed' attempt (the server surely did not book) may be tried again."""
+        row = self.db.execute("select status from booking_attempt where business_id = ? and slot = ?", (business_id, slot)).fetchone()
+        if row and row[0] != "failed":
+            return row[0]
+        self.db.execute("insert or replace into booking_attempt(business_id, slot, status) values (?, ?, 'pending')", (business_id, slot))
+        self.db.commit()
+        return None
+
+    def stop_autobook(self, monitor_id: int) -> None:
+        self.db.execute("update monitor set autobook = 0 where id = ?", (monitor_id,))
+        self.db.commit()
+
+    def booking_status(self, business_id: int, slot: str) -> str | None:
+        row = self.db.execute("select status from booking_attempt where business_id = ? and slot = ?", (business_id, slot)).fetchone()
+        return row and row[0]
+
+    def finish_booking(self, business_id: int, slot: str, status: str, appointment_uid: str | None = None) -> None:
+        self.db.execute("update booking_attempt set status = ?, appointment_uid = ?, updated_at = current_timestamp "
+                        "where business_id = ? and slot = ?", (status, appointment_uid, business_id, slot))
+        self.db.commit()

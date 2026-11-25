@@ -1,0 +1,114 @@
+{
+ "appointment": {
+  "appointment_uid": null,
+  "appointment_id": null,
+  "status": "A",
+  "type": "C",
+  "booked_from": "2026-11-27T14:00",
+  "booked_till": "2026-11-27T16:00",
+  "total": "330,00 zł",
+  "total_value": 330.0,
+  "currency": "PLN",
+  "consent_forms": [
+   {
+    "id": 1,
+    "consent_is_signed": false,
+    "form_title": "Regulamin Salonu",
+    "signed": null
+   }
+  ],
+  "payment_info": {
+   "deposit_cancel_time": {
+    "days": 3
+   },
+   "payable": false,
+   "transaction_id": null,
+   "transaction_info": null,
+   "handle_deposit": false,
+   "auto_release_deposit_on_cancel": null,
+   "deposit_id": null,
+   "deposit_info": null,
+   "booksy_pay": {
+    "is_available": false,
+    "is_payment_window_open": false,
+    "is_paid": false
+   }
+  },
+  "subbookings": [
+   {
+    "booked_from": "2026-11-27T14:00",
+    "booked_till": "2026-11-27T16:00",
+    "staffer_id": 200001,
+    "service_variant": {
+     "id": 300001,
+     "version": 15,
+     "mode": "variant"
+    },
+    "combo_children": [],
+    "id": null,
+    "service": {
+     "id": 400001,
+     "name": "Strzyżenie",
+     "variant": {
+      "id": 300001,
+      "price": 330.0,
+      "duration": 120
+     }
+    },
+    "service_price": "330,00 zł",
+    "staffer": {
+     "id": 200001,
+     "name": "Pracownik A"
+    },
+    "autoassign": false
+   }
+  ],
+  "business": {
+   "id": 100001,
+   "name": "Salon Testowy"
+  }
+ },
+ "appointment_payment": {
+  "tip": {
+   "already_paid": "0,00 zł",
+   "already_paid_unformatted": "0.00",
+   "amount_remaining": 0.0,
+   "rate": "0.00",
+   "type": "P",
+   "label": "Bez napiwku",
+   "amount": "0,00 zł",
+   "amount_unformatted": "0.00"
+  },
+  "force_stripe_pba": true,
+  "to_pay_later": "330.00",
+  "cx_platform_fee": "0.00",
+  "payment_summary": {
+   "rows": [],
+   "summary": [
+    {
+     "label": "Do zapłaty teraz:",
+     "value": "0",
+     "key": "now"
+    },
+    {
+     "label": "Do zapłaty na miejscu:",
+     "value": "330.00",
+     "key": "later"
+    }
+   ]
+  },
+  "cancellation_fee": "0.00",
+  "cancellation_fee_tax": "0.00",
+  "cancellation_fee_total": "0.00",
+  "prepayment": "0.00",
+  "prepayment_tax": "0.00",
+  "prepayment_total": "0.00",
+  "gift_card_code": null,
+  "gift_cards_ids": null
+ },
+ "appointment_partner_payment": null,
+ "three_d_data": null,
+ "meta": null,
+ "is_cancellation_fee_preauth_flow": false,
+ "pre_auth_data": null
+}
