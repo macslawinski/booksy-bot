@@ -1,8 +1,9 @@
 """Booksy customer API: one method per endpoint. No headers, retries or error handling here — that lives in http.py."""
-from datetime import date
+from datetime import date, datetime
 
 from booksy_bot.api.http import HttpCore
-from booksy_bot.api.models import BusinessResponse, TimeSlotsResponse
+from booksy_bot.api.models import AppointmentResponse, BusinessResponse, TimeSlotsResponse
+from booksy_bot.timezones import service_wall_clock
 
 BASE_URL = "https://pl.booksy.com/core/v2/customer_api"
 ANY_STAFFER = -1
@@ -22,3 +23,19 @@ class BooksyClient:
                 "start_date": start.isoformat(), "end_date": end.isoformat()}
         return await self._http.request("POST", f"/me/businesses/{business_id}/appointments/time_slots",
                                         TimeSlotsResponse, json_body=body, idempotent=True)  # read-only POST: safe to retry
+
+    @staticmethod
+    def _booking_body(service_variant_id: int, staffer_id: int, start: datetime) -> dict:
+        return {"subbookings": [{"staffer_id": staffer_id, "booked_from": service_wall_clock(start),
+                                 "service_variant": {"mode": "variant", "id": service_variant_id}, "combo_children": []}],
+                "is_cancellation_fee_preauth_flow": False, "pre_auth_type": "control", "compatibilities": {"prepayment": True}}
+
+    async def dry_run(self, business_id: int, service_variant_id: int, staffer_id: int, start: datetime) -> AppointmentResponse:
+        """Validate a booking (slot still free, price, payment) without booking anything. 400 = slot no longer available."""
+        return await self._http.request("POST", f"/me/appointments/business/{business_id}/dry_run/", AppointmentResponse,
+                                        json_body=self._booking_body(service_variant_id, staffer_id, start), idempotent=True)
+
+    async def book(self, business_id: int, service_variant_id: int, staffer_id: int, start: datetime) -> AppointmentResponse:
+        """REAL booking. Never resent after a possibly-delivered request (idempotent=False): could book twice."""
+        return await self._http.request("POST", f"/me/appointments/business/{business_id}/", AppointmentResponse,
+                                        json_body=self._booking_body(service_variant_id, staffer_id, start), idempotent=False)

@@ -82,3 +82,35 @@ class Business(_Model):
 
 class BusinessResponse(_Model):
     business: Business
+
+
+# ---------- booking (dry_run/ and the real POST share this shape) ----------
+
+class Subbooking(_Model):
+    staffer_id: int
+    booked_from: dt.datetime                                   # naive local wall-clock (Europe/Warsaw)
+
+
+class Appointment(_Model):
+    appointment_uid: int | str | None = None                   # null in dry_run, set once really booked
+    booked_from: dt.datetime
+    total: str | None = None                                   # display text, e.g. "330,00 zł"
+    payment_info: dict[str, Any] = Field(default_factory=dict)
+    subbookings: list[Subbooking]
+
+
+class AppointmentPayment(_Model):
+    prepayment_total: float                                    # sent as strings ("0.00"); pydantic converts
+    cancellation_fee_total: float
+
+
+class AppointmentResponse(_Model):
+    appointment: Appointment
+    payment: AppointmentPayment | None = Field(default=None, alias="appointment_payment")
+
+    @property
+    def needs_payment(self) -> bool:
+        """Anything to pay or pre-authorise now: the bot must stop and leave it to a human (booking-flow-safety #4).
+        Missing payment data counts as 'needs payment' — fail safe."""
+        p = self.payment
+        return p is None or p.prepayment_total > 0 or p.cancellation_fee_total > 0 or bool(self.appointment.payment_info.get("payable"))

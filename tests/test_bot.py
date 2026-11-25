@@ -155,7 +155,8 @@ def test_check_monitor_first_then_silent_then_new():
 
     more = json.loads(json.dumps(SLOTS))
     more["time_slots"][0]["slots"].append({"t": "19:30", "p": ""})
-    msg = asyncio.run(check_monitor(booksy(more), storage, m, NOW))
+    msg, buttons = asyncio.run(check_monitor(booksy(more), storage, m, NOW))
+    assert [b["callback_data"] for row in buttons for b in row] == ["/book 100001 300001 -1 202611271930"]
     assert "Nowe terminy" in msg and "19:30" in msg and "14:00" not in msg and "booksy.com/pl-pl/100001_x" in msg
 
 
@@ -224,7 +225,7 @@ def test_full_flow_with_typed_dates_and_times():
     assert "Wolne terminy (6)" in result[0] and "17:00" in result[0] and "14:00" not in result[0]
     assert storage.active_monitors() == []                     # searching does not watch
 
-    assert "Powiadomię" in run(bot, commands(result)[0])
+    assert "Powiadomię" in run(bot, commands(result)[-1])
     m = storage.active_monitors()[0]
     assert (m.date_from, m.date_to, m.time_from, m.time_to) == ("2026-11-27", "2026-11-28", 1020, 1140)
 
@@ -259,7 +260,8 @@ def test_pick_several_staffers_asks_who():
 def test_find_without_results():
     bot, _ = new_bot(slots={"time_slots": []})
     found = run(bot, "/find 100001 300001 -1 7 0 1440")
-    assert "Brak wolnych terminów" in found[0] and labels(found) == ["🔔 Powiadamiaj o nowych terminach"]
+    assert "Brak wolnych terminów" in found[0] and labels(found) == ["🔔 Powiadamiaj o nowych terminach",
+                                                                   "🤖 Rezerwuj automatycznie, gdy się pojawi"]
 
 
 def test_list_has_stop_buttons():

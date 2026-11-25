@@ -1,0 +1,10 @@
+name: Booksy bot
+version: "0.2.0"          # bump to see "Update" in HA; for code-only changes "Rebuild" is enough
+slug: booksy_bot
+description: Telegram bot – wolne terminy Booksy i rezerwacja
+arch:
+  - amd64                 # Dell Wyse 5070
+startup: application
+boot: auto
+map:
+  - homeassistant_config:rw   # /homeassistant/booksy-bot/.env + booksy_bot.sqlite3 (editable in File editor, kept in HA backups)

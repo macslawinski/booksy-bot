@@ -1,4 +1,4 @@
-"""Telegram bot: search Booksy services and notify about newly appeared free slots. Notifications only, no booking.
+"""Telegram bot: search Booksy services, notify about newly appeared free slots, book a slot after confirmation.
 
   python -m booksy_bot.bot
 
@@ -18,6 +18,8 @@ from datetime import date, datetime, timedelta
 from booksy_bot.api.client import ANY_STAFFER, BooksyClient
 from booksy_bot.api.http import ApiChanged, ApiError, SessionExpired
 from booksy_bot.api.models import Business, Service, Variant
+from booksy_bot import booking
+from booksy_bot.booking import BookArgs
 from booksy_bot.cli import business_id_arg, fresh_token, load_env, make_client
 from booksy_bot.storage import DAY_END, Monitor, Storage
 from booksy_bot.telegram import Telegram, TelegramError
@@ -25,10 +27,11 @@ from booksy_bot.timezones import SERVICE_TZ
 
 log = logging.getLogger("bot")
 MAX_MONITORS = 10          # per chat; keeps polling volume modest (luxmed-bot used the same limit)
+MAX_AUTOBOOK = 3           # unattended bookings at once; Booksy terms: no mass booking
 MAX_DAYS = 60
 LIST_LIMIT = 30            # service buttons per message; more -> type part of the name
 
-HELP = """<b>Booksy bot</b> – szuka wolnych terminów i powiadamia o nowych. Niczego nie rezerwuje.
+HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i rezerwuje po Twoim potwierdzeniu.
 
 <b>Jak szukać</b>
 1. Wyślij link do salonu albo w aplikacji Booksy: salon → Udostępnij → ten bot.
@@ -38,6 +41,10 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów i powiadamia o nowych. N
 5. Godziny: przycisk albo „🕐 Wpisz godziny”, np. <code>16-20</code> lub <code>16:30-19:00</code>.
 6. Dostajesz wolne terminy od razu. Przycisk „🔔 Powiadamiaj” włącza sprawdzanie co kilka minut –
    napiszę tylko o <b>nowych</b> terminach (np. gdy ktoś odwoła wizytę).
+7. „📅 Rezerwuj” pod terminem: bot sprawdza, czy termin jest wolny i ile kosztuje, i pyta o potwierdzenie.
+   Terminów z przedpłatą/kaucją bot nie rezerwuje.
+8. Gdy nie ma terminów: „🤖 Rezerwuj automatycznie” – bot sam zarezerwuje <b>pierwszy</b> wolny termin,
+   który się pojawi, i napisze, co zarezerwował. Potem kończy. Wyłączysz w /list.
 
 <b>Komendy</b>
 /list – aktywne powiadomienia (z przyciskiem „Zakończ”)
@@ -211,22 +218,50 @@ async def find_slots(client: BooksyClient, q: Query, now: date | None = None) ->
 
 def describe(m: Monitor) -> str:
     who = "dowolny pracownik, " if m.staffer_id == ANY_STAFFER else ""   # a chosen staffer is part of service_name
-    return f"#{m.id} <b>{html.escape(m.service_name)}</b> – {html.escape(m.business_name)} ({who}{Query.of(m).scope()})"
+    return f"#{m.id} {'🤖 ' if m.autobook else ''}<b>{html.escape(m.service_name)}</b> – {html.escape(m.business_name)} ({who}{Query.of(m).scope()})"
+
+
+def book_buttons(business_id: int, variant_id: int, staffer_id: int, slots: list[str], limit: int = 5) -> Buttons:
+    return [button(f"📅 Rezerwuj {fmt_slot(s)}", f"/book {BookArgs.of(business_id, variant_id, staffer_id, s).encode()}")
+            for s in slots[:limit]]
 
 
 def salon_link(url: str) -> str:
     return f'\n<a href="{html.escape(url)}">Otwórz salon na Booksy</a>'
 
 
-async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now: date | None = None) -> str | None:
+async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now: date | None = None) -> Reply | None:
     """Fetch slots, remember them, and return a message only when something new appeared (or on the first check)."""
     current = set(await find_slots(client, Query.of(m), now))
     new, first = storage.update_slots(m.id, current)
+    if m.autobook and current:
+        return await autobook(client, storage, m, sorted(current))
+    if first and m.autobook:
+        return f"🤖 Zarezerwuję automatycznie pierwszy wolny termin: {describe(m)}"
     if first:
         return f"🔔 Powiadomię o nowych terminach: {describe(m)}"
     if new:
-        return f"🆕 Nowe terminy – {describe(m)}\n{fmt_slots(new)}{salon_link(m.business_url)}"
+        return (f"🆕 Nowe terminy – {describe(m)}\n{fmt_slots(new)}{salon_link(m.business_url)}",
+                book_buttons(m.business_id, m.variant_id, m.staffer_id, new))
     return None
+
+
+async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: list[str]) -> Reply | None:
+    """Book the earliest free slot (booking.book re-checks it, refuses payments, never books twice).
+    Booked -> monitor ends. Slot gone meanwhile -> try again next check. Anything else -> back to notifications only."""
+    b = BookArgs.of(m.business_id, m.variant_id, m.staffer_id, slots[0])
+    try:
+        msg = await booking.book(client, storage, b)
+    except ValueError as e:
+        log.info("monitor %s: autobook %s skipped: %s", m.id, slots[0], e)
+        return None
+    if storage.booking_status(b.business_id, b.start.isoformat()) == "confirmed":
+        storage.deactivate(m.chat_id, m.id)
+        return f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}"
+    storage.stop_autobook(m.id)
+    return (f"⚠️ Autorezerwacja wyłączona, dalej tylko powiadamiam – {describe(m)}\n{msg}\n\n"
+            f"Wolne terminy:\n{fmt_slots(slots)}{salon_link(m.business_url)}",
+            book_buttons(m.business_id, m.variant_id, m.staffer_id, slots))
 
 
 def find_variant(b: Business, variant_id: int) -> tuple[Service, Variant]:
@@ -288,6 +323,14 @@ class Bot:
             return await self.cmd_find(Query.parse(args))
         if cmd == "/watch" and len(args) in (2, 3, 4, 6):
             return await self.cmd_watch(chat_id, Query.parse(args))
+        if cmd == "/auto" and len(args) == 6:
+            return await self.cmd_auto(Query.parse(args))
+        if cmd == "/autoon" and len(args) == 6:
+            return await self.cmd_watch(chat_id, Query.parse(args), autobook=True)
+        if cmd == "/book" and len(args) == 4:
+            return await self.cmd_book(BookArgs.parse(args))
+        if cmd == "/confirm" and len(args) == 4:
+            return await booking.book(self.client, self.storage, BookArgs.parse(args))
         if cmd == "/list":
             ms = self.storage.chat_monitors(chat_id)
             if not ms:
@@ -377,17 +420,47 @@ class Bot:
         slots = await find_slots(self.client, q)
         head = f"<b>{html.escape(name)}</b> – {html.escape(b.name)} ({q.scope()})\n"
         body = f"Wolne terminy ({len(slots)}):\n{fmt_slots(slots)}{salon_link(b.page_url)}" if slots else "Brak wolnych terminów."
-        return head + body, [button("🔔 Powiadamiaj o nowych terminach", f"/watch {q.encode()}")]
+        watch = [button("🔔 Powiadamiaj o nowych terminach", f"/watch {q.encode()}")]
+        if not slots:
+            return head + body, watch + [button("🤖 Rezerwuj automatycznie, gdy się pojawi", f"/auto {q.encode()}")]
+        return head + body, book_buttons(q.business_id, q.variant_id, q.staffer_id, slots) + watch
 
-    async def cmd_watch(self, chat_id: int, q: Query) -> str:
+    async def cmd_auto(self, q: Query) -> Reply:
+        """Explain what autobook will do and ask once more: it books a real appointment without asking again."""
+        b, name = await self.lookup(q)
+        variant = find_variant(b, q.variant_id)[1]
+        if variant.needs_payment:
+            raise ValueError("ta usługa wymaga przedpłaty/kaucji – autorezerwacja niemożliwa, wybierz „Powiadamiaj”")
+        return (f"🤖 <b>{html.escape(name)}</b> – {html.escape(b.name)} ({q.scope()})\n"
+                f"Gdy pojawi się wolny termin, zarezerwuję <b>pierwszy</b> bez pytania "
+                f"({html.escape(variant.service_price or '?')}, płatność na miejscu) i dam znać. "
+                "Odwołać wizytę możesz w aplikacji Booksy.",
+                [button("✅ Włącz autorezerwację", f"/autoon {q.encode()}")])
+
+    async def cmd_book(self, b: BookArgs) -> Reply:
+        """First step: dry_run shows whether the slot is still free and what it costs; nothing is booked yet."""
+        r = await booking.check(self.client, b)
+        when = f"{b.start:%a %d.%m %H:%M}"
+        if r.needs_payment:
+            return f"💳 {when} wymaga przedpłaty albo kaucji – bot nie płaci. Zarezerwuj ręcznie w Booksy."
+        price = f", {html.escape(r.appointment.total)}" if r.appointment.total else ""
+        return (f"Rezerwować <b>{when}</b>{price}?\n"
+                "Płatność na miejscu, nic do zapłaty teraz.", [button("✅ Tak, rezerwuj", f"/confirm {b.encode()}")])
+
+    async def cmd_watch(self, chat_id: int, q: Query, autobook: bool = False) -> Reply:
         if q.expired(today()):
             raise ValueError("ten zakres dat już minął")
-        if len(self.storage.chat_monitors(chat_id)) >= MAX_MONITORS:
+        active = self.storage.chat_monitors(chat_id)
+        if len(active) >= MAX_MONITORS:
             raise ValueError(f"limit {MAX_MONITORS} powiadomień – zakończ któreś w /list")
+        if autobook and sum(m.autobook for m in active) >= MAX_AUTOBOOK:
+            raise ValueError(f"limit {MAX_AUTOBOOK} autorezerwacji naraz – zakończ którąś w /list")
         b, name = await self.lookup(q)
+        if autobook and find_variant(b, q.variant_id)[1].needs_payment:
+            raise ValueError("ta usługa wymaga przedpłaty/kaucji – autorezerwacja niemożliwa")
         m = self.storage.add_monitor(chat_id, b.id, b.name, b.page_url, q.variant_id, name, q.staffer_id, q.days,
                                      q.date_from and q.date_from.isoformat(), q.date_to and q.date_to.isoformat(),
-                                     q.time_from, q.time_to)
+                                     q.time_from, q.time_to, autobook)
         return await check_monitor(self.client, self.storage, m) or f"🔔 Powiadomię o nowych terminach: {describe(m)}"
 
     # ---------- loops ----------
@@ -419,7 +492,8 @@ class Bot:
             self._alerted.discard("token")
             self._alerted.discard(f"changed:{m.id}")
             if msg:
-                await self.tg.send(m.chat_id, msg)
+                text, buttons = msg if isinstance(msg, tuple) else (msg, None)
+                await self.tg.send(m.chat_id, text, buttons)
             await asyncio.sleep(random.uniform(2, 5))  # spread requests
 
     async def monitor_loop(self, min_s: float, max_s: float) -> None:
