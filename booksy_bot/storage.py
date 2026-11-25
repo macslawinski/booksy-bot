@@ -139,6 +139,12 @@ class Storage:
         self.db.execute("update monitor set autobook = 0 where id = ?", (monitor_id,))
         self.db.commit()
 
+    def booked_months(self, business_id: int) -> set[str]:
+        """'YYYY-MM' of bot bookings in this salon that did or may have succeeded (unknown counts: never book twice)."""
+        rows = self.db.execute("select substr(slot, 1, 7) from booking_attempt where business_id = ? and status != 'failed'",
+                               (business_id,))
+        return {r[0] for r in rows}
+
     def booking_status(self, business_id: int, slot: str) -> str | None:
         row = self.db.execute("select status from booking_attempt where business_id = ? and slot = ?", (business_id, slot)).fetchone()
         return row and row[0]

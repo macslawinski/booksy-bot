@@ -80,7 +80,7 @@ def test_parse_dates(text, expected):
 
 @pytest.mark.parametrize("text,error", [
     ("jutro", "podaj datę"), ("31.02", "nie ma takiej daty"), ("15.12.2026-1.12.2026", "przed początkową"), ("15.12-1.12", "najwyżej"),
-    ("1.11.2026-5.11.2026", "minął"), ("1.12-28.2", "najwyżej"),
+    ("1.11.2026-5.11.2026", "minął"), ("1.12-15.3", "najwyżej"),
 ])
 def test_parse_dates_rejects(text, error):
     with pytest.raises(ValueError, match=error):

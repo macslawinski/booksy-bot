@@ -249,3 +249,60 @@ def test_autobook_button_fits_telegram_limit():
     from booksy_bot.bot import Query
     worst = Query(99999999, 99999999, 99999999, date_from=NOW.date(), date_to=NOW.date(), time_from=1000, time_to=1440)
     assert len(f"/autoon {worst.encode()}".encode()) <= 64
+
+
+def test_rolling_autobook_books_one_visit_per_month(auto_bot):
+    from test_bot import SLOTS, add
+    from booksy_bot.bot import check_monitor
+    _, storage = auto_bot
+    m = add(storage, autobook=True)                             # rolling window (no date_to)
+    two_months = copy.deepcopy(SLOTS)
+    two_months["time_slots"].append({"date": "2026-12-03", "slots": [{"t": "10:00", "p": ""}], "working_day": None})
+    m = storage.add_monitor(m.chat_id, 100001, "Salon", "u", 300001, "S", -1, 30, autobook=True)
+    storage.deactivate(m.chat_id, 1)
+    client, calls = booksy(slots=two_months)
+    msg = asyncio.run(check_monitor(client, storage, m, NOW.date()))
+    assert "Zarezerwowano 27.11 14:00" in msg and "kolejnym miesiącu" in msg
+    assert storage.active_monitors()[0].autobook == 1           # keeps going
+    asyncio.run(check_monitor(client, storage, m, NOW.date()))   # November taken -> December
+    asyncio.run(check_monitor(client, storage, m, NOW.date()))   # both taken -> nothing
+    booked = [b["subbookings"][0]["booked_from"] for p, b in calls if p == BOOK_PATH]
+    assert booked == ["2026-11-27 14:00", "2026-12-03 10:00"]
+
+
+def test_typed_number_of_days_is_rolling_window(auto_bot):
+    from test_bot import commands, run
+    bot, _ = auto_bot
+    run(bot, "/pick 100001 300001")
+    times = run(bot, "90")
+    assert commands(times)[0] == "/find 100001 300001 -1 90 0 1440"
+    run(bot, "/pick 100001 300001")
+    assert "1–92" in run(bot, "93")
+
+
+def test_fast_window(monkeypatch):
+    from booksy_bot.bot import FastWindow, next_delay
+    w = FastWindow.parse("1-3 19:55-20:35 10")
+    at = lambda d, hh, mm: datetime(2026, 12, d, hh, mm, tzinfo=SERVICE_TZ)
+    assert w.active(at(1, 19, 55)) and w.active(at(3, 20, 34)) and not w.active(at(3, 20, 35)) and not w.active(at(4, 20, 0))
+    assert w.seconds_to_start(at(2, 19, 50)) == 300 and w.seconds_to_start(at(2, 20, 0)) is None
+    assert w.seconds_to_start(at(5, 19, 50)) is None
+    monkeypatch.setattr("random.uniform", lambda a, b: b)
+    assert next_delay(at(1, 20, 0), 300, 600, w) == 13          # fast: 10 s * 1.3 jitter
+    assert next_delay(at(1, 19, 52), 300, 600, w) == 180        # wake up exactly at 19:55
+    assert next_delay(at(1, 12, 0), 300, 600, w) == 600         # normal pace
+    assert next_delay(at(1, 20, 0), 300, 600, None) == 600
+    with pytest.raises(SystemExit):
+        FastWindow.parse("1-3 19:55-20:35 2")                   # too fast
+    with pytest.raises(SystemExit):
+        FastWindow.parse("1-3 20:35-19:55 10")
+
+
+def test_fast_check_only_autobook_monitors(auto_bot):
+    from test_bot import add
+    bot, storage = auto_bot
+    add(storage)                                                # plain notification monitor
+    seen = []
+    bot.client = make_client(lambda req: seen.append(req.url.path) or httpx.Response(200, json=EMPTY))
+    asyncio.run(bot.check_all(fast=True))
+    assert seen == []

@@ -13,7 +13,7 @@ import re
 import unicodedata
 from argparse import ArgumentTypeError
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from booksy_bot.api.client import ANY_STAFFER, BooksyClient
 from booksy_bot.api.http import ApiChanged, ApiError, SessionExpired
@@ -28,7 +28,7 @@ from booksy_bot.timezones import SERVICE_TZ
 log = logging.getLogger("bot")
 MAX_MONITORS = 10          # per chat; keeps polling volume modest (luxmed-bot used the same limit)
 MAX_AUTOBOOK = 3           # unattended bookings at once; Booksy terms: no mass booking
-MAX_DAYS = 60
+MAX_DAYS = 92              # salons open bookings up to ~2 months ahead
 LIST_LIMIT = 30            # service buttons per message; more -> type part of the name
 
 HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i rezerwuje po Twoim potwierdzeniu.
@@ -50,7 +50,7 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i r
 /list – aktywne powiadomienia (z przyciskiem „Zakończ”)
 /help – ta pomoc
 
-Powiadomienia z konkretnymi datami kończą się same po ostatnim dniu. Limit: 10 powiadomień, 60 dni.
+Powiadomienia z konkretnymi datami kończą się same po ostatnim dniu. Limit: 10 powiadomień, 92 dni.
 Gdy wygaśnie logowanie do Booksy, dostaniesz jedną wiadomość – wpisz nowy token do .env."""
 
 BOT_COMMANDS = [{"command": "list", "description": "Aktywne powiadomienia"},
@@ -247,8 +247,14 @@ async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now:
 
 
 async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: list[str]) -> Reply | None:
-    """Book the earliest free slot (booking.book re-checks it, refuses payments, never books twice).
-    Booked -> monitor ends. Slot gone meanwhile -> try again next check. Anything else -> back to notifications only."""
+    """Book the earliest free slot in a month without a bot booking in this salon yet (1 visit a month).
+    booking.book re-checks the slot, refuses payments and never books the same slot twice.
+    Booked -> fixed date range ends, rolling window goes on to the next month. Slot gone meanwhile -> try again
+    next check. Anything else -> back to notifications only."""
+    taken = storage.booked_months(m.business_id)
+    slots = [s for s in slots if s[:7] not in taken]
+    if not slots:
+        return None
     b = BookArgs.of(m.business_id, m.variant_id, m.staffer_id, slots[0])
     try:
         msg = await booking.book(client, storage, b)
@@ -256,8 +262,11 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
         log.info("monitor %s: autobook %s skipped: %s", m.id, slots[0], e)
         return None
     if storage.booking_status(b.business_id, b.start.isoformat()) == "confirmed":
-        storage.deactivate(m.chat_id, m.id)
-        return f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}"
+        if m.date_to:
+            storage.deactivate(m.chat_id, m.id)
+            return f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}"
+        return (f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}\n"
+                "Pilnuję dalej: następną wizytę zarezerwuję w kolejnym miesiącu (zakończysz w /list).")
     storage.stop_autobook(m.id)
     return (f"⚠️ Autorezerwacja wyłączona, dalej tylko powiadamiam – {describe(m)}\n{msg}\n\n"
             f"Wolne terminy:\n{fmt_slots(slots)}{salon_link(m.business_url)}",
@@ -346,6 +355,12 @@ class Bot:
         kind, ctx = self._waiting[chat_id]
         if kind == "service":
             return await self.cmd_services(chat_id, ctx, phrase=text)
+        if kind == "dates" and text.strip().isdigit():          # rolling window: always the next N days
+            days = int(text)
+            if not 1 <= days <= MAX_DAYS:
+                raise ValueError(f"liczba dni 1–{MAX_DAYS}")
+            del self._waiting[chat_id]
+            return self.ask_times(f"{ctx} {days}")
         if kind == "dates":
             start, end = parse_dates(text, today())
             del self._waiting[chat_id]
@@ -397,7 +412,8 @@ class Bot:
 
     def ask_days(self, chat_id: int, prefix: str) -> Reply:
         self._waiting[chat_id] = ("dates", prefix)
-        return "Kiedy? Wpisz datę albo zakres dat, np. <code>5.12</code> albo <code>1.12-15.12</code>"
+        return ("Kiedy? Wpisz datę albo zakres dat, np. <code>5.12</code> albo <code>1.12-15.12</code>,\n"
+                f"albo liczbę dni, np. <code>90</code> – zawsze najbliższe 90 dni (max {MAX_DAYS}).")
 
     def ask_times(self, prefix: str) -> Reply:
         rows = [button(label, f"/find {prefix} {a} {b}") for label, a, b in TIME_CHOICES]
@@ -431,9 +447,12 @@ class Bot:
         variant = find_variant(b, q.variant_id)[1]
         if variant.needs_payment:
             raise ValueError("ta usługa wymaga przedpłaty/kaucji – autorezerwacja niemożliwa, wybierz „Powiadamiaj”")
+        rule = ("Potem kończę." if q.date_to else
+                "Potem pilnuję dalej: <b>1 wizyta na miesiąc</b>. Wizyt zarezerwowanych ręcznie nie widzę – "
+                "jeśli masz już wizytę w którymś miesiącu, ustaw zakres dat od kolejnego.")
         return (f"🤖 <b>{html.escape(name)}</b> – {html.escape(b.name)} ({q.scope()})\n"
                 f"Gdy pojawi się wolny termin, zarezerwuję <b>pierwszy</b> bez pytania "
-                f"({html.escape(variant.service_price or '?')}, płatność na miejscu) i dam znać. "
+                f"({html.escape(variant.service_price or '?')}, płatność na miejscu) i dam znać. {rule}\n"
                 "Odwołać wizytę możesz w aplikacji Booksy.",
                 [button("✅ Włącz autorezerwację", f"/autoon {q.encode()}")])
 
@@ -470,8 +489,11 @@ class Bot:
             self._alerted.add(key)
             await self.tg.send(chat_id, text)
 
-    async def check_all(self) -> None:
+    async def check_all(self, fast: bool = False) -> None:
+        """fast = inside the booking-opening window: only autobook monitors, no pauses between them."""
         for m in self.storage.active_monitors():
+            if fast and not m.autobook:
+                continue
             if Query.of(m).expired(today()):
                 self.storage.deactivate(m.chat_id, m.id)
                 await self.tg.send(m.chat_id, f"⌛ Zakres dat minął – kończę {describe(m)}")
@@ -494,15 +516,18 @@ class Bot:
             if msg:
                 text, buttons = msg if isinstance(msg, tuple) else (msg, None)
                 await self.tg.send(m.chat_id, text, buttons)
-            await asyncio.sleep(random.uniform(2, 5))  # spread requests
+            if not fast:
+                await asyncio.sleep(random.uniform(2, 5))  # spread requests
 
-    async def monitor_loop(self, min_s: float, max_s: float) -> None:
+    async def monitor_loop(self, min_s: float, max_s: float, window: "FastWindow | None" = None) -> None:
         while True:
+            now = datetime.now(SERVICE_TZ)
+            fast = bool(window and window.active(now))
             try:
-                await self.check_all()
+                await self.check_all(fast)
             except TelegramError as e:
                 log.warning("telegram: %s", e)
-            await asyncio.sleep(random.uniform(min_s, max_s))
+            await asyncio.sleep(next_delay(datetime.now(SERVICE_TZ), min_s, max_s, window))
 
     async def updates_loop(self) -> None:
         offset = None
@@ -545,6 +570,49 @@ def interval() -> tuple[float, float]:
     return lo_m * 60, hi_m * 60
 
 
+@dataclass(frozen=True)
+class FastWindow:
+    """When a salon opens bookings (e.g. days 1-3 of the month, 19:55-20:35): check autobook monitors every few seconds."""
+    first_day: int
+    last_day: int
+    start: time
+    end: time
+    seconds: float
+
+    @classmethod
+    def parse(cls, text: str) -> "FastWindow":
+        """'1-3 19:55-20:35 10' = days of month, local time range, seconds between checks."""
+        try:
+            days, hours, secs = text.split()
+            d1, _, d2 = days.partition("-")
+            h1, h2 = hours.split("-")
+            w = cls(int(d1), int(d2 or d1), time.fromisoformat(h1.zfill(5)), time.fromisoformat(h2.zfill(5)), float(secs))
+        except ValueError:
+            raise SystemExit(f"FAST_WINDOW: expected e.g. '1-3 19:55-20:35 10', got {text!r}") from None
+        if w.seconds < 5:
+            raise SystemExit("FAST_WINDOW: minimum 5 seconds – more often risks a ban")
+        if not (1 <= w.first_day <= w.last_day <= 31 and w.start < w.end):
+            raise SystemExit(f"FAST_WINDOW: bad days or hours in {text!r}")
+        return w
+
+    def active(self, now: datetime) -> bool:
+        return self.first_day <= now.day <= self.last_day and self.start <= now.time() < self.end
+
+    def seconds_to_start(self, now: datetime) -> float | None:
+        """Seconds until today's window opens; None if it is not a window day or it already started."""
+        if not self.first_day <= now.day <= self.last_day or now.time() >= self.start:
+            return None
+        return (datetime.combine(now.date(), self.start, tzinfo=now.tzinfo) - now).total_seconds()
+
+
+def next_delay(now: datetime, min_s: float, max_s: float, window: FastWindow | None) -> float:
+    if window and window.active(now):
+        return window.seconds * random.uniform(0.7, 1.3)        # jitter: not a fixed machine rhythm
+    delay = random.uniform(min_s, max_s)
+    to_start = window and window.seconds_to_start(now)
+    return min(delay, to_start) if to_start is not None else delay   # wake up exactly when the window opens
+
+
 async def run() -> None:
     load_env()
     if not os.environ.get("TELEGRAM_BOT_TOKEN"):
@@ -554,13 +622,16 @@ async def run() -> None:
     tg = Telegram(os.environ["TELEGRAM_BOT_TOKEN"])
     bot = Bot(tg, client, Storage(os.environ.get("BOT_DB", "booksy_bot.sqlite3")), int(owner) if owner else None)
     lo, hi = interval()
+    window = FastWindow.parse(os.environ["FAST_WINDOW"]) if os.environ.get("FAST_WINDOW") else None
     try:
         await tg.call("setMyCommands", commands=BOT_COMMANDS)   # the "/" menu in Telegram
     except TelegramError as e:
         log.warning("telegram: %s", e)
-    log.info("bot started; checking every %.0f-%.0f min", lo / 60, hi / 60)
+    log.info("bot started; checking every %.0f-%.0f min%s", lo / 60, hi / 60,
+             f"; autobook every {window.seconds:.0f}s on days {window.first_day}-{window.last_day} "
+             f"{window.start:%H:%M}-{window.end:%H:%M}" if window else "")
     try:
-        await asyncio.gather(bot.updates_loop(), bot.monitor_loop(lo, hi))
+        await asyncio.gather(bot.updates_loop(), bot.monitor_loop(lo, hi, window))
     finally:
         await http.aclose()
         await tg.aclose()
