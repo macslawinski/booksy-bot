@@ -28,7 +28,9 @@ class BooksyClient:
     def _booking_body(service_variant_id: int, staffer_id: int, start: datetime) -> dict:
         return {"subbookings": [{"staffer_id": staffer_id, "booked_from": service_wall_clock(start),
                                  "service_variant": {"mode": "variant", "id": service_variant_id}, "combo_children": []}],
-                "is_cancellation_fee_preauth_flow": False, "pre_auth_type": "control", "compatibilities": {"prepayment": True}}
+                "is_cancellation_fee_preauth_flow": False,
+                # widget question "used this salon before?"; True: the bot books salons people already go to
+                "recurring": True, "pre_auth_type": "control", "compatibilities": {"prepayment": True}}
 
     async def dry_run(self, business_id: int, service_variant_id: int, staffer_id: int, start: datetime) -> AppointmentResponse:
         """Validate a booking (slot still free, price, payment) without booking anything. 400 = slot no longer available."""

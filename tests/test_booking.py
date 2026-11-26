@@ -69,7 +69,8 @@ def test_dry_run_request_and_real_response():
     assert calls == [(DRY_PATH, {
         "subbookings": [{"staffer_id": 200001, "booked_from": "2026-11-27 14:00",
                          "service_variant": {"mode": "variant", "id": 300001}, "combo_children": []}],
-        "is_cancellation_fee_preauth_flow": False, "pre_auth_type": "control", "compatibilities": {"prepayment": True}})]
+        "is_cancellation_fee_preauth_flow": False, "recurring": True,  # real POST: 400 without it
+        "pre_auth_type": "control", "compatibilities": {"prepayment": True}})]
 
 
 @pytest.mark.parametrize("field,value", [("prepayment_total", "50.00"), ("cancellation_fee_total", "20.00")])
@@ -276,6 +277,7 @@ def test_fast_window(monkeypatch):
     assert w.active(at(1, 19, 55)) and w.active(at(3, 20, 34)) and not w.active(at(3, 20, 35)) and not w.active(at(4, 20, 0))
     assert w.seconds_to_start(at(2, 19, 50)) == 300 and w.seconds_to_start(at(2, 20, 0)) is None
     assert w.seconds_to_start(at(5, 19, 50)) is None
+    assert w.precheck_due(at(2, 19, 0)) and not w.precheck_due(at(2, 18, 54)) and not w.precheck_due(at(2, 20, 0))
     monkeypatch.setattr("random.uniform", lambda a, b: b)
     assert next_delay(at(1, 20, 0), 300, 600, w) == 13          # fast: 10 s * 1.3 jitter
     assert next_delay(at(1, 19, 52), 300, 600, w) == 180        # wake up exactly at 19:55
