@@ -276,7 +276,7 @@ def test_list_has_stop_buttons():
     run(bot, "/watch 100001 300001")
     reply = run(bot, "/list")
     assert "#1" in reply[0] and commands(reply) == ["/stop 1"]
-    assert run(bot, "/stop 1") == "Zakończono." and storage.active_monitors() == []
+    assert run(bot, "/stop 1") == "✅ Zakończono." and storage.active_monitors() == []
     assert "Brak aktywnych powiadomień" in run(bot, "/list")
 
 
