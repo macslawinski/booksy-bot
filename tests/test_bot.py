@@ -186,6 +186,32 @@ def test_check_all_alerts_once_on_expired_token():
     assert len(tg.sent) == 1 and "Token Booksy wygasł" in tg.sent[0][1]
 
 
+def test_expired_token_alert_says_how_long_it_lived():
+    storage = Storage(":memory:")
+    add(storage)
+    storage.set_token(OWNER, "t", "fp")
+    storage.db.execute("update user set token_set_at = datetime('now', '-3 days')")
+    tg = FakeTg()
+    asyncio.run(Bot(tg, make_client(lambda req: httpx.Response(401)), storage, OWNER).check_all())
+    assert "działał ok. 3 dni" in tg.sent[0][1]
+
+
+def test_pre_window_check_reminds_only_autobook_people_with_expired_token():
+    storage = Storage(":memory:")
+    add(storage, autobook=True)
+    add(storage, autobook=True)                                  # same person: one request, one reminder
+    tg = FakeTg()
+    calls = []
+    bot = Bot(tg, make_client(lambda req: calls.append(req) or httpx.Response(401)), storage, OWNER)
+    asyncio.run(bot.check_all())                                 # told once already
+    asyncio.run(bot.pre_window_check())
+    assert len(tg.sent) == 2 and "Za niecałą godzinę" in tg.sent[1][1]
+    bot, _ = new_bot()
+    add(bot.storage, autobook=True)
+    asyncio.run(bot.pre_window_check())
+    assert bot.tg.sent == []                                     # token works: stay quiet
+
+
 # ---------- conversation ----------
 
 def test_unknown_owner_gets_chat_id_and_strangers_are_ignored():

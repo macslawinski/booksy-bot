@@ -2,6 +2,7 @@
 import sqlite3
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 DAY_END = 24 * 60
 
@@ -38,6 +39,7 @@ create table if not exists user(              -- friends (joined with BOT_PASSWO
     name text not null default '',
     token text,                               -- their own Booksy X-Access-Token (one account per person: Booksy terms)
     fingerprint text not null,                -- their own X-Fingerprint, so accounts do not share one device id
+    token_set_at text,                        -- UTC; to learn how long a Booksy token lives
     created_at text not null default current_timestamp
 );
 create table if not exists blocked(           -- strangers locked out after too many wrong bot passwords
@@ -95,6 +97,8 @@ class Storage:
             self.db.execute("alter table monitor drop column hour_to")
         if "chat_id" not in {r[1] for r in self.db.execute("pragma table_info(booking_attempt)")}:
             self.db.execute("alter table booking_attempt add column chat_id integer")   # null = before friends: counts for everyone
+        if "token_set_at" not in {r[1] for r in self.db.execute("pragma table_info(user)")}:
+            self.db.execute("alter table user add column token_set_at text")
         self.db.commit()
 
     # ---------- friends ----------
@@ -121,8 +125,12 @@ class Storage:
     def set_token(self, chat_id: int, token: str, fingerprint: str | None = None) -> None:
         """Friends are already registered; the owner gets a row on the first /token (fingerprint from .env)."""
         self.db.execute("insert or ignore into user(chat_id, fingerprint) values (?, ?)", (chat_id, fingerprint or str(uuid.uuid4())))
-        self.db.execute("update user set token = ? where chat_id = ?", (token, chat_id))
+        self.db.execute("update user set token = ?, token_set_at = current_timestamp where chat_id = ?", (token, chat_id))
         self.db.commit()
+
+    def token_set_at(self, chat_id: int) -> datetime | None:
+        row = self.db.execute("select token_set_at from user where chat_id = ?", (chat_id,)).fetchone()
+        return datetime.fromisoformat(row[0]).replace(tzinfo=timezone.utc) if row and row[0] else None
 
     def remove_user(self, chat_id: int) -> bool:
         """Forget the friend and their token; their monitors stop (booking history stays: no double booking)."""

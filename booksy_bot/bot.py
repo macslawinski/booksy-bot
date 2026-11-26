@@ -17,7 +17,7 @@ import urllib.parse
 from argparse import ArgumentTypeError
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 from booksy_bot.api.client import ANY_STAFFER, BooksyClient
 from booksy_bot.api.http import ApiChanged, ApiError, SessionExpired
@@ -383,6 +383,7 @@ class Bot:
         self.password = os.environ.get("BOT_PASSWORD", "")
         self.joining: dict[int, int] = {}
         self._alerted: set[str] = set()    # one alert per problem until it is resolved
+        self._prechecked: date | None = None   # day of the last pre-window token check
         # What typed text means right now, per chat: ("service", salon) / ("dates", args) / ("times", args).
         # shortcut: in memory, lost on restart (user just sends the link again); persist if that becomes annoying.
         self._waiting: dict[int, tuple[str, str]] = {}
@@ -659,6 +660,34 @@ class Bot:
             self._alerted.add(key)
             await self.tg.send(chat_id, text)
 
+    async def token_expired(self, chat_id: int, prefix: str) -> None:
+        """One alert per expiry; logs how long the token lived (Booksy does not say)."""
+        key = f"token:{chat_id}"
+        if key in self._alerted:
+            return
+        note = ""
+        if set_at := self.storage.token_set_at(chat_id):
+            hours = (datetime.now(timezone.utc) - set_at).total_seconds() / 3600
+            log.info("token of %s expired %.1f h after it was set (%s UTC)", chat_id, hours, set_at)
+            age = f"{hours:.0f} h" if hours < 48 else f"{hours / 24:.0f} dni"
+            note = f"\n(Poprzedni token działał ok. {age}.)"
+        await self.alert(key, chat_id, prefix + self.token_message(chat_id) + note)
+
+    async def pre_window_check(self) -> None:
+        """Before the booking window: a real request per autobook person, so an expired token is fixed in time."""
+        done: set[int] = set()
+        for m in self.storage.active_monitors():
+            if not m.autobook or m.chat_id in done:
+                continue
+            done.add(m.chat_id)
+            try:
+                await self.client_for(m.chat_id).time_slots(m.business_id, m.variant_id, today(), today(), m.staffer_id)
+            except SessionExpired:
+                self._alerted.discard(f"token:{m.chat_id}")    # remind again even if told hours ago
+                await self.token_expired(m.chat_id, "⏰ Za niecałą godzinę otwarcie zapisów – autorezerwacja nie zadziała. ")
+            except ApiError as e:
+                log.warning("pre-window check %s: %s", m.chat_id, e)
+
     async def check_all(self, fast: bool = False) -> None:
         """fast = inside the booking-opening window: only autobook monitors, no pauses between them."""
         expired: set[int] = set()
@@ -680,7 +709,7 @@ class Bot:
                 msg = await check_monitor(client, self.storage, m, slots=fetched.get(q))
             except SessionExpired:
                 expired.add(m.chat_id)                        # one person's token: the others go on
-                await self.alert(f"token:{m.chat_id}", m.chat_id, "Powiadomienia wstrzymane. " + self.token_message(m.chat_id))
+                await self.token_expired(m.chat_id, "Powiadomienia wstrzymane. ")
                 continue
             except ApiChanged as e:
                 log.error("monitor %s: %s", m.id, e)
@@ -702,6 +731,9 @@ class Bot:
             now = datetime.now(SERVICE_TZ)
             fast = bool(window and window.active(now))
             try:
+                if window and window.precheck_due(now) and self._prechecked != now.date():
+                    self._prechecked = now.date()
+                    await self.pre_window_check()
                 await self.check_all(fast)
             except TelegramError as e:
                 log.warning("telegram: %s", e)
@@ -788,6 +820,11 @@ class FastWindow:
         if not self.first_day <= now.day <= self.last_day or now.time() >= self.start:
             return None
         return (datetime.combine(now.date(), self.start, tzinfo=now.tzinfo) - now).total_seconds()
+
+    def precheck_due(self, now: datetime) -> bool:
+        """The last hour before today's window: time to check tokens."""
+        to_start = self.seconds_to_start(now)
+        return to_start is not None and to_start <= 3600
 
 
 def next_delay(now: datetime, min_s: float, max_s: float, window: FastWindow | None) -> float:
