@@ -1,0 +1,51 @@
+{
+  "appointment": {
+    "_version": 1795690523485,
+    "actions": {
+      "accept": false,
+      "cancel": true,
+      "change": true,
+      "pay": false
+    },
+    "appointment_id": 700001,
+    "appointment_uid": 700001,
+    "booked_from": "2026-12-11T11:00",
+    "booked_till": "2026-12-11T12:30",
+    "status": "A",
+    "total": "179,00 zł",
+    "total_value": 179.0,
+    "payment_info": {
+      "deposit_cancel_time": {
+        "days": 3
+      },
+      "payable": false,
+      "transaction_id": null,
+      "transaction_info": null,
+      "handle_deposit": false,
+      "auto_release_deposit_on_cancel": null,
+      "deposit_id": null,
+      "deposit_info": null,
+      "booksy_pay": {
+        "is_available": false,
+        "is_payment_window_open": false,
+        "is_paid": false
+      }
+    },
+    "type": "C",
+    "business": {
+      "id": 100001,
+      "name": "Salon",
+      "slug": "salon"
+    }
+  },
+  "appointment_payment": {
+    "cx_platform_fee": "0.00",
+    "cancellation_fee": "0.00",
+    "cancellation_fee_tax": "0.00",
+    "cancellation_fee_total": "0.00",
+    "prepayment": "0.00",
+    "prepayment_tax": "0.00",
+    "prepayment_total": "0.00",
+    "is_platform_fee_excluded": false
+  }
+}

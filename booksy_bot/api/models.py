@@ -114,3 +114,33 @@ class AppointmentResponse(_Model):
         Missing payment data counts as 'needs payment' — fail safe."""
         p = self.payment
         return p is None or p.prepayment_total > 0 or p.cancellation_fee_total > 0 or bool(self.appointment.payment_info.get("payable"))
+
+
+# ---------- one booked appointment: GET me/appointments/{uid}/ (real response 2026-11-26) ----------
+
+class AppointmentActions(_Model):
+    cancel: bool                                               # false once the salon's cancel deadline has passed
+
+
+class BusinessRef(_Model):
+    id: int
+    name: str
+
+
+class AppointmentDetails(_Model):
+    appointment_uid: int | str
+    version: int = Field(alias="_version")                     # sent back with the cancel action
+    status: str                                                # "A" = active (observed); other codes unknown
+    booked_from: dt.datetime                                   # naive local wall-clock (Europe/Warsaw)
+    total: str | None = None
+    actions: AppointmentActions
+    business: BusinessRef
+
+
+class AppointmentDetailsResponse(_Model):
+    appointment: AppointmentDetails
+    payment: AppointmentPayment | None = Field(default=None, alias="appointment_payment")
+
+
+class Ack(_Model):
+    """Response body we do not use (the result is checked with a fresh GET)."""

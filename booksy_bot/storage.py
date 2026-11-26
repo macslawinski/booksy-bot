@@ -29,7 +29,7 @@ create table if not exists current_slot(
 create table if not exists booking_attempt(   -- one booking per salon and start time, ever (no double booking)
     business_id integer not null,
     slot text not null,                       -- ISO start, Europe/Warsaw
-    status text not null,                     -- pending / confirmed / failed / unknown
+    status text not null,                     -- pending / confirmed / failed / unknown / cancelled
     appointment_uid text,
     updated_at text not null default current_timestamp,
     primary key (business_id, slot)
@@ -183,9 +183,9 @@ class Storage:
 
     def start_booking(self, business_id: int, slot: str, chat_id: int | None = None) -> str | None:
         """Claim the slot for one booking attempt. Returns None when claimed, else the blocking status.
-        Only a 'failed' attempt (the server surely did not book) may be tried again."""
+        Only a 'failed' or 'cancelled' attempt (no visit exists) may be tried again."""
         row = self.db.execute("select status from booking_attempt where business_id = ? and slot = ?", (business_id, slot)).fetchone()
-        if row and row[0] != "failed":
+        if row and row[0] not in ("failed", "cancelled"):
             return row[0]
         self.db.execute("insert or replace into booking_attempt(business_id, slot, status, chat_id) values (?, ?, 'pending', ?)",
                         (business_id, slot, chat_id))
@@ -198,7 +198,7 @@ class Storage:
 
     def booked_months(self, business_id: int, chat_id: int | None = None) -> set[str]:
         """'YYYY-MM' of this person's bot bookings in this salon that did or may have succeeded (unknown counts)."""
-        rows = self.db.execute("select substr(slot, 1, 7) from booking_attempt where business_id = ? and status != 'failed' "
+        rows = self.db.execute("select substr(slot, 1, 7) from booking_attempt where business_id = ? and status not in ('failed', 'cancelled') "
                                "and (chat_id is ? or chat_id is null)", (business_id, chat_id))
         return {r[0] for r in rows}
 
@@ -206,6 +206,21 @@ class Storage:
         """(status, chat_id) of the bot's attempt for this slot, whoever made it."""
         return self.db.execute("select status, chat_id from booking_attempt where business_id = ? and slot = ?",
                                (business_id, slot)).fetchone()
+
+    def bookings(self, chat_id: int) -> list[tuple[str, str]]:
+        """(slot, appointment_uid) of this person's confirmed bot bookings, earliest first."""
+        return self.db.execute("select slot, appointment_uid from booking_attempt where chat_id = ? and status = 'confirmed' "
+                               "and appointment_uid is not null order by slot", (chat_id,)).fetchall()
+
+    def has_booking(self, chat_id: int, appointment_uid: str) -> bool:
+        """Only visits the bot booked for this person can be cancelled through the bot."""
+        return self.db.execute("select 1 from booking_attempt where chat_id = ? and appointment_uid = ? and status = 'confirmed'",
+                               (chat_id, appointment_uid)).fetchone() is not None
+
+    def cancelled(self, chat_id: int, appointment_uid: str) -> None:
+        self.db.execute("update booking_attempt set status = 'cancelled', updated_at = current_timestamp "
+                        "where chat_id = ? and appointment_uid = ?", (chat_id, appointment_uid))
+        self.db.commit()
 
     def finish_booking(self, business_id: int, slot: str, status: str, appointment_uid: str | None = None) -> None:
         self.db.execute("update booking_attempt set status = ?, appointment_uid = ?, updated_at = current_timestamp "

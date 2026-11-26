@@ -9,7 +9,7 @@ from datetime import datetime
 
 from booksy_bot.api.client import BooksyClient
 from booksy_bot.api.http import ApiError, SessionExpired
-from booksy_bot.api.models import AppointmentResponse
+from booksy_bot.api.models import AppointmentDetails, AppointmentResponse
 from booksy_bot.storage import Storage
 from booksy_bot.timezones import SERVICE_TZ, local_slot
 
@@ -88,6 +88,36 @@ async def book(client: BooksyClient, storage: Storage, b: BookArgs, chat_id: int
         if uid is None:
             return "⚠️ Booksy odpowiedział bez numeru wizyty – sprawdź w aplikacji Booksy, czy rezerwacja jest."
         status = "confirmed"
-        return f"✅ Zarezerwowano {b.start:%d.%m %H:%M}" + (f", {r.appointment.total}" if r.appointment.total else "") + "."
+        return (f"✅ Zarezerwowano {b.start:%d.%m %H:%M}" + (f", {r.appointment.total}" if r.appointment.total else "")
+                + ". Odwołać możesz w /visits.")
     finally:
         storage.finish_booking(b.business_id, slot, status if sent else "failed", None if uid is None else str(uid))
+
+
+async def cancellable(client: BooksyClient, storage: Storage, chat_id: int, uid: str) -> AppointmentDetails:
+    """Fresh state of a visit the bot booked for this person; ValueError when it cannot be cancelled here."""
+    if not storage.has_booking(chat_id, uid):
+        raise ValueError("tej wizyty nie rezerwował dla Ciebie bot – odwołaj ją w aplikacji Booksy")
+    a = (await client.appointment(uid)).appointment
+    if a.status != "A":
+        raise ValueError("ta wizyta nie jest już aktywna (może została odwołana) – sprawdź w aplikacji Booksy")
+    if not a.actions.cancel:
+        raise ValueError("Booksy nie pozwala już odwołać tej wizyty (minął termin salonu) – zadzwoń do salonu")
+    return a
+
+
+async def cancel(client: BooksyClient, storage: Storage, chat_id: int, uid: str) -> str:
+    """Cancel once, then confirm with a fresh GET: the POST's own answer is not trusted (unknown outcome is possible)."""
+    a = await cancellable(client, storage, chat_id, uid)   # fresh _version; a double click finds it already cancelled
+    try:
+        await client.cancel(uid, a.version)
+    except SessionExpired:
+        raise
+    except ApiError as e:
+        if e.status is not None and 400 <= e.status < 500:
+            return f"❌ Booksy odrzucił odwołanie: {e}"
+        # unknown outcome or unexpected body: the GET below says what happened
+    if (await client.appointment(uid)).appointment.status == "A":
+        return "⚠️ Booksy nie potwierdził odwołania – sprawdź wizytę w aplikacji Booksy."
+    storage.cancelled(chat_id, uid)
+    return f"✅ Odwołano wizytę {a.booked_from:%d.%m %H:%M} – {a.business.name}."
