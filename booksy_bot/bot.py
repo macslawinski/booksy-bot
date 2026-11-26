@@ -249,7 +249,7 @@ async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now:
 async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: list[str]) -> Reply | None:
     """Book the earliest free slot in a month without a bot booking in this salon yet (1 visit a month).
     booking.book re-checks the slot, refuses payments and never books the same slot twice.
-    Booked -> fixed date range ends, rolling window goes on to the next month. Slot gone meanwhile -> try again
+    Booked -> ends once every month of the date range has a visit. Slot gone meanwhile -> try again
     next check. Anything else -> back to notifications only."""
     taken = storage.booked_months(m.business_id)
     slots = [s for s in slots if s[:7] not in taken]
@@ -262,11 +262,14 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
         log.info("monitor %s: autobook %s skipped: %s", m.id, slots[0], e)
         return None
     if storage.booking_status(b.business_id, b.start.isoformat()) == "confirmed":
-        if m.date_to:
+        start, end = Query.of(m).window(today())
+        months = {f"{start.year + (start.month - 1 + i) // 12}-{(start.month - 1 + i) % 12 + 1:02d}"
+                  for i in range((end.year - start.year) * 12 + end.month - start.month + 1)}
+        if months <= storage.booked_months(m.business_id):
             storage.deactivate(m.chat_id, m.id)
             return f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}"
         return (f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}\n"
-                "Pilnuję dalej: następną wizytę zarezerwuję w kolejnym miesiącu (zakończysz w /list).")
+                "Pilnuję dalej pozostałych miesięcy z zakresu – 1 wizyta na miesiąc (zakończysz w /list).")
     storage.stop_autobook(m.id)
     return (f"⚠️ Autorezerwacja wyłączona, dalej tylko powiadamiam – {describe(m)}\n{msg}\n\n"
             f"Wolne terminy:\n{fmt_slots(slots)}{salon_link(m.business_url)}",
@@ -355,12 +358,6 @@ class Bot:
         kind, ctx = self._waiting[chat_id]
         if kind == "service":
             return await self.cmd_services(chat_id, ctx, phrase=text)
-        if kind == "dates" and text.strip().isdigit():          # rolling window: always the next N days
-            days = int(text)
-            if not 1 <= days <= MAX_DAYS:
-                raise ValueError(f"liczba dni 1–{MAX_DAYS}")
-            del self._waiting[chat_id]
-            return self.ask_times(f"{ctx} {days}")
         if kind == "dates":
             start, end = parse_dates(text, today())
             del self._waiting[chat_id]
@@ -412,8 +409,7 @@ class Bot:
 
     def ask_days(self, chat_id: int, prefix: str) -> Reply:
         self._waiting[chat_id] = ("dates", prefix)
-        return ("Kiedy? Wpisz datę albo zakres dat, np. <code>5.12</code> albo <code>1.12-15.12</code>,\n"
-                f"albo liczbę dni, np. <code>90</code> – zawsze najbliższe 90 dni (max {MAX_DAYS}).")
+        return "Kiedy? Wpisz datę albo zakres dat, np. <code>5.12</code> albo <code>1.12-15.12</code>"
 
     def ask_times(self, prefix: str) -> Reply:
         rows = [button(label, f"/find {prefix} {a} {b}") for label, a, b in TIME_CHOICES]
@@ -447,9 +443,8 @@ class Bot:
         variant = find_variant(b, q.variant_id)[1]
         if variant.needs_payment:
             raise ValueError("ta usługa wymaga przedpłaty/kaucji – autorezerwacja niemożliwa, wybierz „Powiadamiaj”")
-        rule = ("Potem kończę." if q.date_to else
-                "Potem pilnuję dalej: <b>1 wizyta na miesiąc</b>. Wizyt zarezerwowanych ręcznie nie widzę – "
-                "jeśli masz już wizytę w którymś miesiącu, ustaw zakres dat od kolejnego.")
+        rule = ("<b>1 wizyta na każdy miesiąc z zakresu</b>, potem kończę. Wizyt zarezerwowanych ręcznie nie widzę – "
+                "jeśli masz już wizytę w którymś miesiącu, zacznij zakres od kolejnego.")
         return (f"🤖 <b>{html.escape(name)}</b> – {html.escape(b.name)} ({q.scope()})\n"
                 f"Gdy pojawi się wolny termin, zarezerwuję <b>pierwszy</b> bez pytania "
                 f"({html.escape(variant.service_price or '?')}, płatność na miejscu) i dam znać. {rule}\n"
