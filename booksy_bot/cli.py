@@ -44,12 +44,13 @@ def fresh_token() -> str:
     return parse_env().get("BOOKSY_ACCESS_TOKEN") or os.environ.get("BOOKSY_ACCESS_TOKEN", "")
 
 
-def make_client(token_provider=lambda: os.environ["BOOKSY_ACCESS_TOKEN"]) -> tuple[BooksyClient, HttpCore]:
+def make_client(token_provider=lambda: os.environ["BOOKSY_ACCESS_TOKEN"],
+                fingerprint: str | None = None) -> tuple[BooksyClient, HttpCore]:
     missing = [k for k in ("BOOKSY_API_KEY", "BOOKSY_ACCESS_TOKEN") if not os.environ.get(k)]
     if missing:
         sys.exit(f"missing in .env: {', '.join(missing)} (see .env.example)")
     headers = {"X-Api-Key": os.environ["BOOKSY_API_KEY"],
-               "X-Fingerprint": os.environ.get("BOOKSY_FINGERPRINT") or str(uuid.uuid4()),
+               "X-Fingerprint": fingerprint or os.environ.get("BOOKSY_FINGERPRINT") or str(uuid.uuid4()),
                "Accept-Language": "pl", "Accept": "application/json"}
     if os.environ.get("BOOKSY_APP_VERSION"):
         headers["X-App-Version"] = os.environ["BOOKSY_APP_VERSION"]

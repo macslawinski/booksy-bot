@@ -57,12 +57,12 @@ async def check(client: BooksyClient, b: BookArgs) -> AppointmentResponse:
     return r
 
 
-async def book(client: BooksyClient, storage: Storage, b: BookArgs) -> str:
+async def book(client: BooksyClient, storage: Storage, b: BookArgs, chat_id: int | None = None) -> str:
     """Re-check and book once. Returns the message for the user; ApiError before sending propagates."""
     slot = b.start.isoformat()
-    blocked = storage.start_booking(b.business_id, slot)
+    blocked = storage.start_booking(b.business_id, slot, chat_id)
     if blocked == "confirmed":
-        return "✅ Ten termin jest już zarezerwowany przez bota."
+        return "✅ Ten termin jest już zarezerwowany przez bota."   # by this person or a friend: one slot, one visit
     if blocked:  # pending / unknown: an earlier attempt may have booked it
         return ("⚠️ Wcześniejsza próba rezerwacji tego terminu nie dała pewnej odpowiedzi. "
                 "Sprawdź wizyty w aplikacji Booksy – nie ponawiam, żeby nie zarezerwować dwa razy.")

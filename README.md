@@ -41,7 +41,14 @@ Uzupełnij `.env`:
 - `TELEGRAM_CHAT_ID` — zostaw puste, uruchom bota i wyślij mu `/start`; odpowie Twoim chat id. Bot obsługuje tylko ten jeden czat.
 - `BOOKSY_API_KEY`, `BOOKSY_ACCESS_TOKEN` — zaloguj się na booksy.com, F12 → Network → dowolne żądanie do
   `pl.booksy.com/core/...` → nagłówki `X-Api-Key` i `X-Access-Token`. Bot sam się nie loguje (logowanie wymaga hCaptcha);
-  po wygaśnięciu tokenu wklej nowy do `.env` — restart niepotrzebny.
+  po wygaśnięciu tokenu wklej nowy do `.env` — restart niepotrzebny. Z telefonu: `/login` w bocie (niżej).
+
+### Token z telefonu (`/login`)
+
+Bot przysyła kod zakładki (bookmarklet). Zapisujesz go raz jako zakładkę w przeglądarce telefonu. Potem: zaloguj się na
+booksy.com, otwórz zakładkę, stuknij dowolną kategorię albo salon — zakładka łapie `X-Access-Token` z pierwszego zapytania
+strony do API, kopiuje `/token …` i otwiera Telegram; wklejasz i wysyłasz (bot usuwa tę wiadomość). Działa dla właściciela
+(nadpisuje token z `.env`) i dla znajomych.
 
 Start:
 
@@ -56,6 +63,17 @@ Opcjonalnie w `.env`:
 - `CHECK_MINUTES=5-10` — jak często sprawdzać (losowo z zakresu, minimum 2).
 - `FAST_WINDOW=1-3 19:55-20:35 10` — dni miesiąca, godziny i co ile sekund (minimum 5) sprawdzać autorezerwacje,
   np. gdy salon otwiera zapisy 1–3 dnia miesiąca ok. 20:00. Poza oknem bot budzi się dokładnie na jego początek.
+
+## Znajomi (wspólny bot)
+
+Znajomy pisze do bota `/start` i podaje hasło `BOT_PASSWORD` z `.env` (wiadomość z hasłem bot usuwa; 3 złe próby =
+trwała blokada tego czatu; bez `BOT_PASSWORD` nikt nie dołączy). Właściciel (`TELEGRAM_CHAT_ID`) dostaje powiadomienie.
+Każdy znajomy podłącza **własne** konto Booksy (`/login` z telefonu albo `/token WARTOŚĆ`; wiadomość jest od razu usuwana) — regulamin Booksy
+to jedno konto na osobę. Znajomy ma osobne powiadomienia i rezerwacje, limit 3 powiadomień i 1 autorezerwacji.
+Właściciel ma pierwszeństwo: w każdym cyklu jego autorezerwacje idą pierwsze, znajomi dostają kolejne wolne terminy.
+`/users` – lista, `/kick ID` – usunięcie (token i powiadomienia).
+
+Uwaga: wszystkie konta łączą się z jednego IP, a tokeny znajomych leżą w bazie bota — zapraszaj tylko zaufane osoby.
 
 ## Home Assistant OS (dodatek)
 
