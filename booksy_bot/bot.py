@@ -55,6 +55,7 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i r
 
 <b>Komendy</b>
 /list – aktywne powiadomienia (z przyciskiem „Zakończ”)
+/visits – wizyty zarezerwowane przez bota (z przyciskiem „Odwołaj”)
 /login – podłącz konto Booksy z telefonu
 /help – ta pomoc
 
@@ -130,6 +131,7 @@ Znajomy korzysta z własnego konta Booksy, ale z Twojego IP – ryzyko blokady d
 Nowy token Booksy z telefonu: /login."""
 
 BOT_COMMANDS = [{"command": "list", "description": "Aktywne powiadomienia"},
+                {"command": "visits", "description": "Wizyty zarezerwowane przez bota (odwołanie)"},
                 {"command": "login", "description": "Podłącz konto Booksy z telefonu"},
                 {"command": "help", "description": "Jak korzystać z bota"}]
 
@@ -336,7 +338,7 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
     next check. Anything else -> back to notifications only."""
     taken = storage.booked_months(m.business_id, m.chat_id)
     slots = [s for s in slots if s[:7] not in taken
-             and (storage.booking_status(m.business_id, s) or ('failed',))[0] == 'failed']   # not someone else's
+             and (storage.booking_status(m.business_id, s) or ('failed',))[0] in ('failed', 'cancelled')]   # not someone else's
     if not slots:
         return None
     b = BookArgs.of(m.business_id, m.variant_id, m.staffer_id, slots[0])
@@ -514,6 +516,19 @@ class Bot:
             if not ms:
                 return "Brak aktywnych powiadomień. Wyślij link do salonu, żeby zacząć."
             return "\n".join(describe(m) for m in ms), [button(f"❌ Zakończ #{m.id} {m.service_name}", f"/stop {m.id}") for m in ms]
+        if cmd == "/visits":
+            later = [(s, uid) for s, uid in self.storage.bookings(chat_id) if datetime.fromisoformat(s) > booking.now()]
+            if not later:
+                return "Brak nadchodzących wizyt zarezerwowanych przez bota."
+            return ("Wizyty zarezerwowane przez bota:\n" + fmt_slots([s for s, _ in later], limit=len(later)),
+                    [button(f"❌ Odwołaj {fmt_slot(s)}", f"/cancel {uid}") for s, uid in later])
+        if cmd == "/cancel" and len(args) == 1:
+            a = await booking.cancellable(self.api, self.storage, chat_id, args[0])
+            return (f"Odwołać wizytę <b>{a.booked_from:%d.%m %H:%M}</b> – {html.escape(a.business.name)}"
+                    + (f", {html.escape(a.total)}" if a.total else "") + "?",
+                    [button("✅ Tak, odwołaj", f"/cancelok {args[0]}")])
+        if cmd == "/cancelok" and len(args) == 1:
+            return await booking.cancel(self.api, self.storage, chat_id, args[0])
         if cmd == "/stop" and len(args) == 1 and args[0].lstrip("#").isdigit():
             ok = self.storage.deactivate(chat_id, int(args[0].lstrip("#")))
             return "✅ Zakończono." if ok else "Nie ma takiego aktywnego powiadomienia."
@@ -622,7 +637,7 @@ class Bot:
         return (f"🤖 <b>{html.escape(name)}</b> – {html.escape(b.name)} ({q.scope()})\n"
                 f"Gdy pojawi się wolny termin, zarezerwuję <b>pierwszy</b> bez pytania "
                 f"({html.escape((variant.service_price or '?').replace(',00', ''))}, płatność na miejscu) i dam znać. {rule}\n"
-                "Odwołać wizytę możesz w aplikacji Booksy.",
+                "Odwołać wizytę możesz w /visits.",
                 [button("✅ Włącz autorezerwację", f"/autoon {q.encode()}")])
 
     async def cmd_book(self, b: BookArgs) -> Reply:

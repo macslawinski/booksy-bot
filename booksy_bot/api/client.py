@@ -2,7 +2,7 @@
 from datetime import date, datetime
 
 from booksy_bot.api.http import HttpCore
-from booksy_bot.api.models import AppointmentResponse, BusinessResponse, TimeSlotsResponse
+from booksy_bot.api.models import Ack, AppointmentDetailsResponse, AppointmentResponse, BusinessResponse, TimeSlotsResponse
 from booksy_bot.timezones import service_wall_clock
 
 BASE_URL = "https://pl.booksy.com/core/v2/customer_api"
@@ -41,3 +41,13 @@ class BooksyClient:
         """REAL booking. Never resent after a possibly-delivered request (idempotent=False): could book twice."""
         return await self._http.request("POST", f"/me/appointments/business/{business_id}/", AppointmentResponse,
                                         json_body=self._booking_body(service_variant_id, staffer_id, start), idempotent=False)
+
+    async def appointment(self, appointment_uid: int | str) -> AppointmentDetailsResponse:
+        """One of my appointments: status, whether it can still be cancelled, _version for the cancel action."""
+        return await self._http.request("GET", f"/me/appointments/{appointment_uid}/", AppointmentDetailsResponse)
+
+    async def cancel(self, appointment_uid: int | str, version: int) -> Ack:
+        """REAL cancel (found in booksy.com's JS 2026-11-26). Not resent after an unknown outcome; check with appointment()."""
+        return await self._http.request("POST", f"/me/appointments/{appointment_uid}/action/", Ack,
+                                        json_body={"action": "cancel", "_version": version, "no_thumbs": "true"},
+                                        idempotent=False)
