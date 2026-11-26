@@ -11,19 +11,22 @@ Inspirowany [dyrkin/luxmed-bot](https://github.com/dyrkin/luxmed-bot).
 - Wklejasz link do salonu (z przeglądarki albo „Udostępnij” z aplikacji) → wybierasz usługę, pracownika, daty i godziny.
 - Bot od razu pokazuje wolne terminy, a po kliknięciu „Powiadamiaj” sprawdza je cyklicznie i pisze o nowych.
 - „📅 Rezerwuj” pod terminem: bot sprawdza termin (`dry_run`, niczego nie rezerwuje), pokazuje cenę i pyta o potwierdzenie.
-- „🤖 Rezerwuj automatycznie”, gdy nie ma terminów: bot sam rezerwuje pierwszy wolny termin, który się pojawi
+- „🤖 Rezerwuj automatycznie”: bot sam rezerwuje najwcześniejszy wolny termin (już dostępny albo ten, który się pojawi)
   w podanym zakresie dat — 1 wizyta na każdy miesiąc z zakresu, potem kończy (najwyżej 3 autorezerwacje naraz).
+  Liczą się też wizyty w tym salonie umówione ręcznie w aplikacji Booksy.
+- `/visits`: Twoje nadchodzące wizyty w Booksy (także umówione w aplikacji) z przyciskiem „❌ Odwołaj”.
 - Okno zapisów (`FAST_WINDOW`): dla salonów, które otwierają kalendarz o stałej porze, bot w tym oknie sprawdza
   autorezerwacje co kilka sekund.
-- Alert, gdy sesja Booksy wygaśnie.
+- Alert, gdy sesja Booksy wygaśnie, i przypomnienie w ostatniej godzinie przed oknem zapisów, jeśli token nie działa.
 
 ### Zasady bezpieczeństwa rezerwacji
 
 - Terminy z przedpłatą, kaucją albo opłatą za odwołanie: bot ich nie rezerwuje, tylko powiadamia.
 - Przed każdą rezerwacją świeże sprawdzenie terminu i godziny.
 - Jedna próba na termin, zapisana w bazie przed wysłaniem — podwójne kliknięcie nie robi drugiej wizyty.
-- Brak pewnej odpowiedzi od Booksy (timeout, błąd serwera) → bez ponawiania; bot prosi o sprawdzenie wizyt w aplikacji.
-- Bot nie widzi wizyt zarezerwowanych ręcznie w aplikacji.
+- Brak pewnej odpowiedzi od Booksy (timeout, błąd serwera) → bez ponawiania; bot sprawdza listę Twoich wizyt,
+  a gdy jej tam nie ma, prosi o sprawdzenie w aplikacji.
+- Odwołanie: najpierw pytanie z aktualnymi danymi wizyty, potem jedno żądanie i sprawdzenie wyniku.
 
 ## Uruchomienie
 
@@ -38,7 +41,8 @@ cp .env.example .env
 Uzupełnij `.env`:
 
 - `TELEGRAM_BOT_TOKEN` — od [@BotFather](https://t.me/BotFather).
-- `TELEGRAM_CHAT_ID` — zostaw puste, uruchom bota i wyślij mu `/start`; odpowie Twoim chat id. Bot obsługuje tylko ten jeden czat.
+- `TELEGRAM_CHAT_ID` — zostaw puste, uruchom bota i wyślij mu `/start`; odpowie Twoim chat id. To właściciel bota
+  (znajomi dołączają hasłem, niżej).
 - `BOOKSY_API_KEY`, `BOOKSY_ACCESS_TOKEN` — zaloguj się na booksy.com, F12 → Network → dowolne żądanie do
   `pl.booksy.com/core/...` → nagłówki `X-Api-Key` i `X-Access-Token`. Bot sam się nie loguje (logowanie wymaga hCaptcha);
   po wygaśnięciu tokenu wklej nowy do `.env` — restart niepotrzebny. Z telefonu: `/login` w bocie (niżej).
@@ -56,7 +60,8 @@ Start:
 .venv/Scripts/python -m booksy_bot.bot
 ```
 
-Komendy: `/help`, `/list` (aktywne obserwacje), `/stop N`.
+Komendy: `/help`, `/list` (aktywne powiadomienia, przycisk „Zakończ”), `/visits` (wizyty i odwołanie), `/login` (token z telefonu);
+właściciel: `/users`, `/kick ID`.
 
 Opcjonalnie w `.env`:
 
@@ -88,6 +93,7 @@ Bot może działać 24/7 jako lokalny dodatek HA (`homeassistant-addon/`). Wymag
 4. Zatrzymaj bota na komputerze — dwa naraz kłócą się o wiadomości z Telegrama.
 
 Aktualizacja kodu: `deploy.ps1` (bez `-WithData`, inaczej nadpisze bazę) i „Przebuduj” przy dodatku.
+Włącz przy dodatku **Watchdog** — po awarii procesu HA uruchomi bota ponownie.
 Dane bota leżą w `/homeassistant/booksy-bot/` (`.env`, baza) — token zmieniasz tam, np. dodatkiem File editor.
 
 ## CLI (bez Telegrama)
@@ -102,6 +108,8 @@ Dane bota leżą w `/homeassistant/booksy-bot/` (`.env`, baza) — token zmienia
 ```sh
 .venv/Scripts/python -m pytest -q
 ```
+
+GitHub Actions uruchamia je przy każdym pull requeście (`.github/workflows/tests.yml`).
 
 ## Bezpieczeństwo
 

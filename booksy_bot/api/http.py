@@ -119,6 +119,7 @@ class HttpCore:
         params: Mapping[str, Any] | None = None,
         json_body: Any = None,
         idempotent: bool | None = None,
+        retries: int | None = None,
     ) -> M:
         """Send, retry what is safe, map errors, parse into `model`.
 
@@ -134,8 +135,9 @@ class HttpCore:
         if token:
             headers[self._token_header] = token
 
-        for attempt in range(self._max_retries + 1):
-            last = attempt == self._max_retries
+        max_retries = self._max_retries if retries is None else retries   # 0 = fail fast (booking window)
+        for attempt in range(max_retries + 1):
+            last = attempt == max_retries
             t0 = time.monotonic()
             try:
                 resp = await self._client.request(method, path, params=params, json=json_body, headers=headers)

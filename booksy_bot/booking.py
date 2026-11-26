@@ -108,8 +108,10 @@ async def visit_at(client: BooksyClient, b: BookArgs) -> str | None:
 
 
 async def visit_months(client: BooksyClient, business_id: int) -> set[str]:
-    """'YYYY-MM' of my active visits in this salon, also those booked by hand in the app."""
-    return {f"{v.booked_from:%Y-%m}" for v in (await client.my_bookings()).bookings if v.active and v.business.id == business_id}
+    """'YYYY-MM' of my active visits in this salon, also those booked by hand in the app.
+    A list up to 5 min old is fine: it only changes when someone books by hand, and the bot's own bookings reset it."""
+    visits = (await client.my_bookings(max_age=300)).bookings
+    return {f"{v.booked_from:%Y-%m}" for v in visits if v.active and v.business.id == business_id}
 
 
 async def cancellable(client: BooksyClient, uid: str) -> AppointmentDetails:

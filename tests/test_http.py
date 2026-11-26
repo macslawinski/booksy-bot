@@ -105,3 +105,10 @@ def test_logs_never_contain_secrets(caplog):
 
 def test_mask():
     assert mask({"X-Access-Token": "t", "nested": {"password": "p", "name": "ok"}}) == {"X-Access-Token": "***", "nested": {"password": "***", "name": "ok"}}
+
+
+def test_retries_zero_fails_fast():
+    sleeps, calls = [], []
+    with pytest.raises(ApiError):
+        run(make_core(lambda r: calls.append(r) or httpx.Response(503), sleeps).request("GET", "/x", Ok, retries=0))
+    assert len(calls) == 1 and sleeps == []                     # booking window: the next 10 s cycle is the retry

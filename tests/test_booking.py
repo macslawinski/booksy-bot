@@ -347,3 +347,32 @@ def test_fast_check_only_autobook_monitors(auto_bot):
     bot.client = make_client(lambda req: seen.append(req.url.path) or httpx.Response(200, json=EMPTY))
     asyncio.run(bot.check_all(fast=True))
     assert seen == []
+
+
+def test_autobook_ends_when_every_month_has_a_visit_booked_by_hand(auto_bot):
+    from test_bot import SLOTS, add
+    from booksy_bot.bot import check_monitor
+    _, storage = auto_bot
+    m = add(storage, autobook=True, date_from="2026-11-27", date_to="2026-11-28")
+    client, calls = booksy(slots=SLOTS, visits=[visit("2026-11-30T09:00")])
+    msg = asyncio.run(check_monitor(client, storage, m, NOW.date()))
+    assert "Każdy miesiąc z zakresu ma już wizytę" in msg and storage.active_monitors() == []
+    assert BOOK_PATH not in paths(calls)
+
+
+def test_visit_list_is_reused_for_5_minutes_but_refreshed_after_booking():
+    fetched = []
+    client, _ = booksy(on_book=httpx.ReadTimeout("slow"))
+    real = client._http.request
+    async def counting(method, path, *a, **kw):
+        if path == "/me/bookings":
+            fetched.append(path)
+        return await real(method, path, *a, **kw)
+    client._http.request = counting
+    asyncio.run(bookingmod.visit_months(client, 100001))
+    asyncio.run(bookingmod.visit_months(client, 100001))
+    assert len(fetched) == 1
+    asyncio.run(book(client, Storage(":memory:"), SLOT))        # booking drops the cached list; the timeout looks it up afresh
+    assert len(fetched) == 2
+    asyncio.run(bookingmod.visit_months(client, 100001))         # ...and that fresh list is reused
+    assert len(fetched) == 2

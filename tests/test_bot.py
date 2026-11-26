@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 import booksy_bot.bot as botmod
+import booksy_bot.storage as storagemod
 from booksy_bot.bot import Bot, Query, check_monitor, fold, parse_dates, parse_times
 from booksy_bot.storage import Storage
 from booksy_bot.telegram import Telegram, TelegramError
@@ -143,6 +144,7 @@ def test_database_from_previous_versions_is_migrated(tmp_path):
     m = Storage(str(db)).active_monitors()[0]
     assert (m.date_from, m.time_from, m.time_to) == (None, 17 * 60, 24 * 60)
     Storage(str(db))  # second start: nothing left to migrate
+    assert sqlite3.connect(db).execute("pragma user_version").fetchone()[0] == len(storagemod.MIGRATIONS)
 
 
 # ---------- monitoring ----------
@@ -332,3 +334,57 @@ def test_telegram_errors_never_contain_token():
     with pytest.raises(TelegramError) as e:
         asyncio.run(tg.send(1, "x"))
     assert secret not in str(e.value) and e.value.__cause__ is None
+
+
+# ---------- resilience ----------
+
+def test_one_broken_monitor_or_failed_message_does_not_stop_the_cycle(monkeypatch):
+    bot, storage = new_bot()
+    broken, ok, ok2 = add(storage), add(storage), add(storage)
+    real = botmod.check_monitor
+    async def flaky(client, storage, m, *a, **kw):
+        if m.id == broken.id:
+            raise RuntimeError("bug")                            # anything unexpected
+        return await real(client, storage, m, *a, **kw)
+    monkeypatch.setattr(botmod, "check_monitor", flaky)
+    monkeypatch.setattr(botmod.random, "uniform", lambda a, b: 0)
+    sent = []
+    async def send(chat_id, text, buttons=None):
+        sent.append(text)
+        if len(sent) == 1:
+            raise TelegramError("sendMessage: Forbidden: bot was blocked by the user")
+    bot.tg.send = send
+    asyncio.run(bot.check_all())
+    assert len(sent) == 2 and f"#{ok2.id}" in sent[1]           # the cycle went on past both failures
+
+
+def test_cancel_takes_only_a_visit_number():
+    bot, _ = new_bot()
+    assert "Nie rozumiem" in run(bot, "/cancelok ../../me")
+
+
+def test_password_tries_survive_a_restart(monkeypatch):
+    monkeypatch.setenv("BOT_PASSWORD", "secret-pass")
+    storage = Storage(":memory:")
+    bot = Bot(FakeTg(), booksy(), storage, OWNER)
+    asyncio.run(bot.handle(555, "/start"))
+    asyncio.run(bot.handle(555, "wrong"))
+    bot = Bot(FakeTg(), booksy(), storage, OWNER)               # restart
+    assert "Zostało prób: 1" in asyncio.run(bot.handle(555, "wrong"))
+
+
+def test_telegram_cuts_long_messages_at_a_line_and_falls_back_to_plain_text():
+    from booksy_bot.telegram import LIMIT, fit
+    text = "<b>x</b>\n" * 1000
+    out = fit(text)
+    assert len(out) <= LIMIT and out.endswith("\n…") and out.count("<b>") == out.count("</b>")
+    sent = []
+    def handler(req):
+        body = json.loads(req.content)
+        sent.append(body)
+        if body.get("parse_mode"):
+            return httpx.Response(200, json={"ok": False, "description": "Bad Request: can't parse entities"})
+        return httpx.Response(200, json={"ok": True, "result": {}})
+    tg = Telegram("123:abc", transport=httpx.MockTransport(handler))
+    asyncio.run(tg.send(1, "Salon <b>A &amp; B</b> <3"))
+    assert sent[-1]["text"] == "Salon A & B <3" and "parse_mode" not in sent[-1]

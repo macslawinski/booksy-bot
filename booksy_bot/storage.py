@@ -46,6 +46,10 @@ create table if not exists blocked(           -- strangers locked out after too 
     chat_id integer primary key,
     created_at text not null default current_timestamp
 );
+create table if not exists join_attempt(      -- strangers asked for the bot password (in the DB: a restart gives no new tries)
+    chat_id integer primary key,
+    tries_left integer not null
+);
 """
 # Added after the first release; added to older DBs by Storage._migrate.
 NEW_COLUMNS = {
@@ -55,6 +59,30 @@ NEW_COLUMNS = {
     "time_to": f"integer not null default {DAY_END}",
     "autobook": "integer not null default 0",             # 1 = book the first free slot without asking
 }
+
+
+def _columns(db: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in db.execute(f"pragma table_info({table})")}
+
+
+def _before_versioning(db: sqlite3.Connection) -> None:
+    """Everything added before user_version was used; checks each column, so it is safe on any older file."""
+    cols = _columns(db, "monitor")
+    for name, ddl in NEW_COLUMNS.items():
+        if name not in cols:
+            db.execute(f"alter table monitor add column {name} {ddl}")
+    if "hour_from" in cols:  # short-lived whole-hour window -> minutes
+        db.execute("update monitor set time_from = hour_from * 60, time_to = hour_to * 60")
+        db.execute("alter table monitor drop column hour_from")
+        db.execute("alter table monitor drop column hour_to")
+    if "chat_id" not in _columns(db, "booking_attempt"):
+        db.execute("alter table booking_attempt add column chat_id integer")   # null = before friends: counts for everyone
+    if "token_set_at" not in _columns(db, "user"):
+        db.execute("alter table user add column token_set_at text")
+
+
+# Append only; never edit or reorder a step that has shipped (user_version = number of steps done).
+MIGRATIONS = [_before_versioning]
 
 
 @dataclass
@@ -86,19 +114,11 @@ class Storage:
         self._migrate()
 
     def _migrate(self) -> None:
-        # shortcut: hand-rolled column migration; switch to a migration tool if the schema keeps changing.
-        cols = {r[1] for r in self.db.execute("pragma table_info(monitor)")}
-        for name, ddl in NEW_COLUMNS.items():
-            if name not in cols:
-                self.db.execute(f"alter table monitor add column {name} {ddl}")
-        if "hour_from" in cols:  # short-lived whole-hour window -> minutes
-            self.db.execute("update monitor set time_from = hour_from * 60, time_to = hour_to * 60")
-            self.db.execute("alter table monitor drop column hour_from")
-            self.db.execute("alter table monitor drop column hour_to")
-        if "chat_id" not in {r[1] for r in self.db.execute("pragma table_info(booking_attempt)")}:
-            self.db.execute("alter table booking_attempt add column chat_id integer")   # null = before friends: counts for everyone
-        if "token_set_at" not in {r[1] for r in self.db.execute("pragma table_info(user)")}:
-            self.db.execute("alter table user add column token_set_at text")
+        """Run the MIGRATIONS this file has not had yet; `pragma user_version` counts the ones done."""
+        done = self.db.execute("pragma user_version").fetchone()[0]
+        for n, step in enumerate(MIGRATIONS[done:], done + 1):
+            step(self.db)
+            self.db.execute(f"pragma user_version = {n}")
         self.db.commit()
 
     # ---------- friends ----------
@@ -110,6 +130,18 @@ class Storage:
 
     def block(self, chat_id: int) -> None:
         self.db.execute("insert or ignore into blocked(chat_id) values (?)", (chat_id,))
+        self.db.commit()
+
+    def join_tries(self, chat_id: int) -> int | None:
+        """Password tries left for a stranger who sent /start; None = not asked."""
+        row = self.db.execute("select tries_left from join_attempt where chat_id = ?", (chat_id,)).fetchone()
+        return row and row[0]
+
+    def set_join_tries(self, chat_id: int, tries_left: int | None) -> None:
+        if tries_left is None:
+            self.db.execute("delete from join_attempt where chat_id = ?", (chat_id,))
+        else:
+            self.db.execute("insert or replace into join_attempt(chat_id, tries_left) values (?, ?)", (chat_id, tries_left))
         self.db.commit()
 
     def is_blocked(self, chat_id: int) -> bool:
