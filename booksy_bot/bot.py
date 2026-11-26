@@ -442,8 +442,12 @@ class Bot:
             return "\n".join(f"<code>{c}</code> {html.escape(n)} – {'token ✅' if t else 'bez tokenu'}"
                              for c, n, t in us if c != self.owner) or "Brak znajomych."
         if cmd == "/kick" and chat_id == self.owner and len(args) == 1 and args[0].isdigit() and int(args[0]) != self.owner:
-            self._friend_clients.pop(int(args[0]), None)
-            return "Usunięto." if self.storage.remove_user(int(args[0])) else "Nie ma takiego użytkownika."
+            who = int(args[0])
+            self._friend_clients.pop(who, None)
+            self.joining.pop(who, None)
+            removed = self.storage.remove_user(who)
+            self.storage.block(who)          # the password is shared: without this they could just join again
+            return "Usunięto i zablokowano." if removed else "Nie ma takiego użytkownika (czat zablokowany)."
         if cmd == "/services" and len(args) == 1:
             return await self.cmd_services(chat_id, args[0])
         if cmd == "/pick" and len(args) == 2:

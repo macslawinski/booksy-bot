@@ -71,7 +71,7 @@ trwała blokada tego czatu; bez `BOT_PASSWORD` nikt nie dołączy). Właściciel
 Każdy znajomy podłącza **własne** konto Booksy (`/login` z telefonu albo `/token WARTOŚĆ`; wiadomość jest od razu usuwana) — regulamin Booksy
 to jedno konto na osobę. Znajomy ma osobne powiadomienia i rezerwacje, limit 3 powiadomień i 1 autorezerwacji.
 Właściciel ma pierwszeństwo: w każdym cyklu jego autorezerwacje idą pierwsze, znajomi dostają kolejne wolne terminy.
-`/users` – lista, `/kick ID` – usunięcie (token i powiadomienia).
+`/users` – lista, `/kick ID` – usunięcie (token i powiadomienia) i trwała blokada tego czatu.
 
 Uwaga: wszystkie konta łączą się z jednego IP, a tokeny znajomych leżą w bazie bota — zapraszaj tylko zaufane osoby.
 
