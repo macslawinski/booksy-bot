@@ -1,5 +1,4 @@
 """SQLite state: monitors and the slots seen in the last check (to notify only about newly appeared slots)."""
-import secrets
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -34,16 +33,15 @@ create table if not exists booking_attempt(   -- one booking per salon and start
     updated_at text not null default current_timestamp,
     primary key (business_id, slot)
 );
-create table if not exists user(              -- invited friends; the owner (TELEGRAM_CHAT_ID) is not stored here
+create table if not exists user(              -- friends (joined with BOT_PASSWORD); the owner only after their own /token
     chat_id integer primary key,
     name text not null default '',
     token text,                               -- their own Booksy X-Access-Token (one account per person: Booksy terms)
     fingerprint text not null,                -- their own X-Fingerprint, so accounts do not share one device id
     created_at text not null default current_timestamp
 );
-create table if not exists invite(
-    code text primary key,
-    used_by integer,
+create table if not exists blocked(           -- strangers locked out after too many wrong bot passwords
+    chat_id integer primary key,
     created_at text not null default current_timestamp
 );
 """
@@ -101,20 +99,17 @@ class Storage:
 
     # ---------- friends ----------
 
-    def add_invite(self) -> str:
-        code = secrets.token_urlsafe(6)
-        self.db.execute("insert into invite(code) values (?)", (code,))
-        self.db.commit()
-        return code
-
-    def redeem_invite(self, code: str, chat_id: int, name: str) -> bool:
-        """One-time code -> registered user (with their own fingerprint). False when unknown or already used."""
-        cur = self.db.execute("update invite set used_by = ? where code = ? and used_by is null", (chat_id, code))
-        if cur.rowcount != 1:
-            return False
+    def add_user(self, chat_id: int, name: str) -> None:
+        """Registered friend with their own fingerprint (one device id per Booksy account)."""
         self.db.execute("insert or ignore into user(chat_id, name, fingerprint) values (?, ?, ?)", (chat_id, name, str(uuid.uuid4())))
         self.db.commit()
-        return True
+
+    def block(self, chat_id: int) -> None:
+        self.db.execute("insert or ignore into blocked(chat_id) values (?)", (chat_id,))
+        self.db.commit()
+
+    def is_blocked(self, chat_id: int) -> bool:
+        return self.db.execute("select 1 from blocked where chat_id = ?", (chat_id,)).fetchone() is not None
 
     def user(self, chat_id: int) -> tuple[str, str | None, str] | None:
         """(name, token, fingerprint) of a registered friend."""

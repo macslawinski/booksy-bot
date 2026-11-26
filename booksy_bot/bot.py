@@ -6,6 +6,7 @@ Needs in .env: BOOKSY_* (see .env.example), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 """
 import asyncio
 import contextvars
+import hmac
 import html
 import logging
 import os
@@ -32,6 +33,7 @@ MAX_MONITORS = 10          # per chat; keeps polling volume modest (luxmed-bot u
 MAX_AUTOBOOK = 3           # unattended bookings at once; Booksy terms: no mass booking
 FRIEND_MAX_MONITORS = 3    # friends share the owner's IP: keep their traffic small
 FRIEND_MAX_AUTOBOOK = 1
+PASSWORD_TRIES = 3          # wrong bot passwords before the chat is blocked for good
 MAX_DAYS = 92              # salons open bookings up to ~2 months ahead
 LIST_LIMIT = 30            # service buttons per message; more -> type part of the name
 
@@ -92,7 +94,9 @@ Limit: 3 powiadomienia, 1 autorezerwacja. Do tego samego terminu pierwszeństwo 
 OWNER_HELP = """
 
 <b>Znajomi</b>
-/invite – jednorazowy kod zaproszenia, /users – lista, /kick ID – usuń (z tokenem i powiadomieniami).
+Znajomy pisze do bota /start i podaje hasło (BOT_PASSWORD na serwerze); 3 złe próby = blokada.
+Znajomy korzysta z własnego konta Booksy, ale z Twojego IP – ryzyko blokady dotyczy też Ciebie.
+/users – lista, /kick ID – usuń (z tokenem i powiadomieniami).
 Nowy token Booksy z telefonu: /login."""
 
 BOT_COMMANDS = [{"command": "list", "description": "Aktywne powiadomienia"},
@@ -339,6 +343,9 @@ class Bot:
         self._friend_client = friend_client
         self._friend_clients: dict[int, BooksyClient] = {}
         self.username = "Booksy_booking_bot"   # replaced by getMe at start; used in the /login bookmarklet
+        # Joining = /start + BOT_PASSWORD (unset = nobody can join). chat_id -> tries left while asking for it.
+        self.password = os.environ.get("BOT_PASSWORD", "")
+        self.joining: dict[int, int] = {}
         self._alerted: set[str] = set()    # one alert per problem until it is resolved
         # What typed text means right now, per chat: ("service", salon) / ("dates", args) / ("times", args).
         # shortcut: in memory, lost on restart (user just sends the link again); persist if that becomes annoying.
@@ -371,12 +378,7 @@ class Bot:
             return f"Twój chat id: <code>{chat_id}</code>\nDopisz <code>TELEGRAM_CHAT_ID={chat_id}</code> do .env i uruchom bota ponownie."
         text = text.strip()
         if chat_id != self.owner and not self.is_friend(chat_id):
-            parts = text.split()
-            if len(parts) == 2 and parts[0] == "/start" and self.storage.redeem_invite(parts[1], chat_id, name):
-                log.info("friend %s joined", chat_id)
-                await self.tg.send(self.owner, f"👋 Dołączył(a) {html.escape(name) or chat_id} (<code>{chat_id}</code>).")
-                return "Witaj! Najpierw podłącz swoje konto Booksy." + FRIEND_HELP
-            return None  # private bot: strangers without a valid invite are ignored silently
+            return await self.join(chat_id, text, name)
         token = _api.set(self.client_for(chat_id))
         try:
             return await self._dispatch(chat_id, text)
@@ -386,6 +388,33 @@ class Bot:
             return f"Błąd: {html.escape(str(e))[:300]}"
         finally:
             _api.reset(token)
+
+    async def join(self, chat_id: int, text: str, name: str) -> str | None:
+        """Strangers: /start, then BOT_PASSWORD; 3 wrong -> blocked for good (no guessing). Anything else: silence."""
+        if not self.password or self.storage.is_blocked(chat_id):
+            return None  # private bot
+        if text.split()[:1] == ["/start"]:
+            self.joining.setdefault(chat_id, PASSWORD_TRIES)
+            return "🔒 Podaj hasło do bota (wiadomość od razu usunę)."
+        if chat_id not in self.joining:
+            return None
+        tries = self.joining.pop(chat_id)
+        if hmac.compare_digest(text.encode(), self.password.encode()):
+            return await self.welcome(chat_id, name)
+        if tries > 1:
+            self.joining[chat_id] = tries - 1
+            return f"Złe hasło. Zostało prób: {tries - 1}."
+        self.storage.block(chat_id)
+        log.warning("chat %s blocked after wrong passwords", chat_id)
+        await self.tg.send(self.owner, f"⚠️ {PASSWORD_TRIES}× złe hasło od {html.escape(name) or chat_id} "
+                                       f"(<code>{chat_id}</code>) – zablokowany.")
+        return "Złe hasło. Dostęp zablokowany."
+
+    async def welcome(self, chat_id: int, name: str) -> str:
+        self.storage.add_user(chat_id, name)
+        log.info("friend %s joined", chat_id)
+        await self.tg.send(self.owner, f"👋 Dołączył(a) {html.escape(name) or chat_id} (<code>{chat_id}</code>).")
+        return "Witaj! Najpierw podłącz swoje konto Booksy." + FRIEND_HELP
 
     async def _dispatch(self, chat_id: int, text: str) -> Reply:
         if not text.startswith("/"):
@@ -408,10 +437,6 @@ class Bot:
             self.storage.set_token(chat_id, args[0], os.environ.get("BOOKSY_FINGERPRINT") if chat_id == self.owner else None)
             self._alerted.discard(f"token:{chat_id}")
             return "✅ Token zapisany, wiadomość z nim usunięta. Wyślij link do salonu, żeby zacząć."
-        if cmd == "/invite" and chat_id == self.owner:
-            code = self.storage.add_invite()
-            return (f"Jednorazowe zaproszenie – niech znajomy napisze do bota:\n<code>/start {code}</code>\n"
-                    "Znajomy korzysta z własnego konta Booksy, ale z Twojego IP (Wyse) – ryzyko blokady dotyczy też Ciebie.")
         if cmd == "/users" and chat_id == self.owner:
             us = self.storage.users()
             return "\n".join(f"<code>{c}</code> {html.escape(n)} – {'token ✅' if t else 'bez tokenu'}"
@@ -651,9 +676,10 @@ class Bot:
                 if not text or chat_id is None:
                     continue
                 chat = msg.get("chat") or {}
+                secret = text.startswith("/token") or chat_id in self.joining     # Booksy token or bot password
                 reply = await self.handle(chat_id, text, chat.get("first_name") or chat.get("username") or "")
-                if text.startswith("/token") and msg.get("message_id") and not cb:
-                    try:   # the token gives access to their Booksy account: do not leave it in the chat history
+                if secret and msg.get("message_id") and not cb:
+                    try:   # do not leave secrets in the chat history
                         await self.tg.call("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
                     except TelegramError as e:
                         log.warning("telegram: %s", e)

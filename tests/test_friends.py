@@ -58,6 +58,7 @@ def setup():
     storage = Storage(":memory:")
     tg = FakeTg()
     bot = Bot(tg, api("owner", log), storage, OWNER, friend_client=lambda chat_id: api(f"friend{chat_id}", log))
+    bot.password = "test-pass"                                       # BOT_PASSWORD
     return bot, storage, tg, log
 
 
@@ -66,20 +67,28 @@ def run(bot, text, chat_id=OWNER, name=""):
 
 
 def join(bot, chat_id=FRIEND):
-    code = run(bot, "/invite").split("/start ")[1].split("<")[0]
-    return run(bot, f"/start {code}", chat_id, "Ania"), code
+    assert "Podaj hasło" in run(bot, "/start", chat_id, "Ania")
+    return run(bot, "test-pass", chat_id, "Ania")
 
 
-def test_invite_is_one_time_and_strangers_are_ignored(setup):
+def test_join_with_password_strangers_are_ignored(setup):
     bot, storage, tg, _ = setup
-    assert run(bot, "/list", STRANGER) is None
-    assert run(bot, "/start wrong", STRANGER) is None
-    welcome, code = join(bot)
+    assert run(bot, "/list", STRANGER) is None                      # no /start: silence
+    assert run(bot, "test-pass", STRANGER) is None                  # password without /start: silence
+    assert "Podaj hasło" in run(bot, "/start", FRIEND, "Ania")
+    assert storage.user(FRIEND) is None                             # not in yet
+    assert "Zostało prób: 2" in run(bot, "wrong", FRIEND)
+    welcome = run(bot, "test-pass", FRIEND, "Ania")
     assert "Twoje konto Booksy" in welcome and "/login" in welcome
     assert any("Dołączył(a) Ania" in text for chat, text in tg.sent if chat == OWNER)
-    assert run(bot, f"/start {code}", STRANGER) is None             # used already
     assert "Ania" in run(bot, "/users") and "bez tokenu" in run(bot, "/users")
-    assert run(bot, "/invite", FRIEND).startswith("Nie rozumiem")    # owner-only commands
+    assert run(bot, "/users", FRIEND).startswith("Nie rozumiem")     # owner-only commands
+
+
+def test_no_password_configured_nobody_joins(setup):
+    bot, storage, _, _ = setup
+    bot.password = ""
+    assert run(bot, "/start", FRIEND) is None and run(bot, "", FRIEND) is None and storage.user(FRIEND) is None
 
 
 def test_friend_uses_own_token_and_account(setup):
@@ -151,6 +160,20 @@ def test_booked_months_are_per_person():
     s.start_booking(100001, "2026-12-03T10:00:00+01:00", OWNER)
     s.finish_booking(100001, "2026-12-03T10:00:00+01:00", "confirmed")
     assert s.booked_months(100001, OWNER) == {"2026-12"} and s.booked_months(100001, FRIEND) == set()
+
+
+def test_wrong_password_three_times_blocks_the_chat_for_good(setup):
+    bot, storage, tg, _ = setup
+    run(bot, "/start", STRANGER)
+    run(bot, "a", STRANGER)
+    run(bot, "/start", STRANGER)                                    # restarting does not reset the tries
+    run(bot, "b", STRANGER)
+    assert "zablokowany" in run(bot, "c", STRANGER)
+    assert any(c == OWNER and "złe hasło" in t for c, t in tg.sent)
+    assert run(bot, "/start", STRANGER) is None and run(bot, "test-pass", STRANGER) is None
+    bot2 = Bot(FakeTg(), bot.client, storage, OWNER)                # after a restart too
+    bot2.password = "test-pass"
+    assert run(bot2, "/start", STRANGER) is None and storage.user(STRANGER) is None
 
 
 def test_login_gives_phone_bookmarklet_for_this_bot(setup):
