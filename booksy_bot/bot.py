@@ -78,21 +78,38 @@ BOOKMARKLET_JS = ("(()=>{let d=0;const g=t=>{if(d)return;d=1;const m='/token '+t
 def bookmarklet(bot_username: str) -> str:
     return "javascript:" + urllib.parse.quote(BOOKMARKLET_JS.replace("t.me/BOT'", f"t.me/{bot_username}'"), safe="()[]{};,.:/'+=!*_~-|")
 
-LOGIN_HELP = """<b>Logowanie z telefonu (raz na jakiś czas)</b>
-Bot nie loguje się sam (Booksy wymaga CAPTCHA), więc przekazujesz mu token ze swojej zalogowanej przeglądarki.
+LOGIN_HELP = """<b>Jak podłączyć Booksy do bota (z telefonu)</b>
 
-<b>Jednorazowo – dodaj zakładkę:</b>
-1. Stuknij kod poniżej – skopiuje się.
-2. Chrome (Android): ⋮ → ☆ (dodaj zakładkę) → ✏️ edytuj → nazwa <b>Booksy bot</b>, w polu adresu wklej kod → zapisz.
-   Safari (iPhone): na dowolnej stronie Udostępnij → Dodaj zakładkę → zapisz. Potem 📖 Zakładki → Edytuj → stuknij ją →
-   nazwa <b>Booksy bot</b>, adres usuń w całości i wklej kod → Gotowe. Kodu NIE wklejaj w pasek adresu – Safari go nie uruchomi.
+<b>CZĘŚĆ 1 – robisz tylko raz: zapisz zakładkę</b>
 
-<b>Za każdym razem:</b>
-1. Otwórz <b>booksy.com</b> w tej przeglądarce i zaloguj się (jeśli trzeba).
-2. Otwórz zakładkę <b>Booksy bot</b>: Safari – 📖 Zakładki → Booksy bot; Chrome – wpisz w pasek „Booksy bot” i stuknij zakładkę z listy.
-3. Stuknij dowolną kategorię albo salon – pojawi się okienko z <code>/token …</code>, tekst jest już w schowku.
-4. Otworzy się Telegram – wklej i wyślij. Wiadomość z tokenem od razu usuwam.
+<b>iPhone (Safari):</b>
+1. Stuknij szary kod na samym dole tej wiadomości. Skopiuje się.
+2. Otwórz Safari, wejdź na jakąkolwiek stronę (np. google.pl).
+3. Stuknij ikonę <b>Udostępnij</b> (kwadrat ze strzałką w górę) → <b>Dodaj zakładkę</b> → <b>Zachowaj</b>.
+4. Stuknij ikonę <b>📖 Zakładki</b> → na dole <b>Edytuj</b> → stuknij zakładkę, którą właśnie dodałeś.
+5. W pierwszym polu (nazwa) wpisz: <b>Booksy bot</b>
+6. W drugim polu (adres) skasuj wszystko, przytrzymaj palec → <b>Wklej</b>.
+7. Stuknij <b>Gotowe</b>.
 
+<b>Android (Chrome):</b>
+1. Stuknij szary kod na samym dole tej wiadomości. Skopiuje się.
+2. W Chrome na dowolnej stronie: <b>⋮</b> → <b>☆</b> → <b>Edytuj</b>.
+3. Nazwa: <b>Booksy bot</b>. Adres: skasuj wszystko i wklej kod. Zapisz.
+
+<b>CZĘŚĆ 2 – za każdym razem, gdy bot napisze, że token wygasł</b>
+1. W Safari/Chrome wejdź na <b>booksy.com</b> i zaloguj się (jak zawsze).
+2. NIE otwieraj nowej karty. Na tej samej stronie Booksy:
+   iPhone: <b>📖 Zakładki</b> → <b>Booksy bot</b>.
+   Android: stuknij pasek adresu, wpisz <b>Booksy bot</b>, stuknij zakładkę z gwiazdką.
+3. Wyskoczy okienko „OK…” → stuknij <b>OK</b>.
+4. Stuknij na stronie Booksy cokolwiek, np. kategorię <b>Barber</b>.
+5. Wyskoczy okienko z tekstem <code>/token …</code> → stuknij <b>OK</b>.
+6. Otworzy się Telegram. W czacie z botem przytrzymaj palec → <b>Wklej</b> → <b>Wyślij</b>.
+7. Bot odpisze „Token zapisany”. Gotowe.
+
+Coś nie działa? Napisz, w którym kroku utknąłeś.
+
+👇 KOD (stuknij, żeby skopiować):
 <code>{code}</code>"""
 
 FRIEND_HELP = """
