@@ -1,0 +1,31 @@
+{
+  "bookings": [
+    {
+      "_version": 1795690926408,
+      "actions": {
+        "accept": false,
+        "cancel": false,
+        "change": false,
+        "pay": false
+      },
+      "active": false,
+      "appointment_uid": 700001,
+      "id": 700002,
+      "booked_from": "2026-12-11T11:00",
+      "booked_from_iso": "2026-12-11T11:00:00+01:00",
+      "booked_till": "2026-12-11T12:30",
+      "status": "C",
+      "timezone_name": "Europe/Warsaw",
+      "total": "179,00 zł",
+      "type": "C",
+      "business": {
+        "id": 100001,
+        "name": "Salon",
+        "slug": "salon",
+        "active": true
+      }
+    }
+  ],
+  "bookings_per_page": 20,
+  "bookings_count": 1
+}

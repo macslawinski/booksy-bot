@@ -144,3 +144,18 @@ class AppointmentDetailsResponse(_Model):
 
 class Ack(_Model):
     """Response body we do not use (the result is checked with a fresh GET)."""
+
+
+# ---------- my visits: GET me/bookings?state=active (real response 2026-11-26) ----------
+
+class BookingItem(_Model):
+    appointment_uid: int | str
+    status: str
+    active: bool
+    booked_from: dt.datetime                                   # naive local wall-clock (Europe/Warsaw)
+    business: BusinessRef
+    total: str | None = None
+
+
+class BookingsResponse(_Model):
+    bookings: list[BookingItem]

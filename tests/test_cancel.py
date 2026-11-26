@@ -14,6 +14,7 @@ from booksy_bot.timezones import SERVICE_TZ
 from conftest import make_client
 from test_bot import OWNER, FakeTg
 
+BOOKINGS = json.loads((Path(__file__).parent / "fixtures/bookings.json").read_text(encoding="utf-8"))  # real GET, trimmed
 APPT = json.loads((Path(__file__).parent / "fixtures/appointment.json").read_text(encoding="utf-8"))  # real GET, trimmed
 UID = "700001"
 SLOT = "2026-12-11T11:00:00+01:00"
@@ -33,6 +34,10 @@ def booksy(on_cancel=None, cancels=True, can_cancel=True):
 
     def handler(req):
         calls.append((req.method, req.url.path, json.loads(req.content) if req.content else None))
+        if req.url.path.endswith("/me/bookings"):
+            v = copy.deepcopy(BOOKINGS["bookings"][0])
+            v.update(status=state["status"], active=state["status"] == "A")
+            return httpx.Response(200, json={"bookings": [v]})
         if req.method == "GET" and req.url.path == GET_PATH:
             data = copy.deepcopy(APPT)
             data["appointment"]["status"] = state["status"]
@@ -67,33 +72,34 @@ def cancel_posts(calls):
 def test_visits_cancel_confirm_then_cancelled_once():
     bot, storage, calls = setup()
     text, buttons = run(bot, "/visits")
-    assert "11.12, 11:00" in text and buttons[0][0]["callback_data"] == f"/cancel {UID}"
+    assert "11.12, 11:00 – Salon" in text and buttons[0][0]["callback_data"] == f"/cancel {UID}"
     text, buttons = run(bot, f"/cancel {UID}")
     assert "Odwołać wizytę <b>11.12 11:00</b> – Salon, 179,00" in text and cancel_posts(calls) == []   # nothing sent yet
     assert "✅ Odwołano wizytę 11.12 11:00" in run(bot, f"/cancelok {UID}")
     assert cancel_posts(calls) == [("POST", CANCEL_PATH, {"action": "cancel", "_version": 1795690523485, "no_thumbs": "true"})]
-    assert storage.bookings(OWNER) == [] and storage.booked_months(100001, OWNER) == set()
+    assert storage.booked_months(100001, OWNER) == set()
     assert storage.start_booking(100001, SLOT, OWNER) is None                 # the slot can be booked again
-    assert "nie rezerwował" in run(bot, f"/cancelok {UID}")                   # double click: no second cancel
+    assert "nie jest już aktywna" in run(bot, f"/cancelok {UID}")             # double click: no second cancel
     assert len(cancel_posts(calls)) == 1
+    assert run(bot, "/visits") == "Brak nadchodzących wizyt."
 
 
 def test_someone_elses_visit_is_not_touched():
     bot, _, calls = setup()
-    assert "nie rezerwował" in run(bot, "/cancel 999")
-    assert calls == []
+    assert "HTTP 404" in run(bot, "/cancelok 999")                           # Booksy: not this account's visit
+    assert cancel_posts(calls) == []
 
 
 def test_past_salon_deadline_no_cancel_sent():
     bot, storage, calls = setup(can_cancel=False)
     assert "minął termin" in run(bot, f"/cancelok {UID}")
-    assert cancel_posts(calls) == [] and storage.bookings(OWNER) == [(SLOT, UID)]
+    assert cancel_posts(calls) == [] and storage.booked_months(100001, OWNER) == {"2026-12"}
 
 
 def test_refused_cancel_keeps_the_visit():
     bot, storage, calls = setup(on_cancel=httpx.Response(400, json={"errors": [{"code": "x"}]}), cancels=False)
     assert "odrzucił odwołanie" in run(bot, f"/cancelok {UID}")
-    assert storage.bookings(OWNER) == [(SLOT, UID)]
+    assert storage.booked_months(100001, OWNER) == {"2026-12"}
 
 
 @pytest.mark.parametrize("cancels,expected", [(True, "✅ Odwołano"), (False, "nie potwierdził")])
@@ -101,4 +107,4 @@ def test_unknown_outcome_is_checked_not_resent(cancels, expected):
     bot, storage, calls = setup(on_cancel=httpx.ReadTimeout("slow"), cancels=cancels)
     assert expected in run(bot, f"/cancelok {UID}")
     assert len(cancel_posts(calls)) == 1
-    assert (storage.bookings(OWNER) == []) is cancels
+    assert (storage.booked_months(100001, OWNER) == set()) is cancels

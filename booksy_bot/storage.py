@@ -207,16 +207,6 @@ class Storage:
         return self.db.execute("select status, chat_id from booking_attempt where business_id = ? and slot = ?",
                                (business_id, slot)).fetchone()
 
-    def bookings(self, chat_id: int) -> list[tuple[str, str]]:
-        """(slot, appointment_uid) of this person's confirmed bot bookings, earliest first."""
-        return self.db.execute("select slot, appointment_uid from booking_attempt where chat_id = ? and status = 'confirmed' "
-                               "and appointment_uid is not null order by slot", (chat_id,)).fetchall()
-
-    def has_booking(self, chat_id: int, appointment_uid: str) -> bool:
-        """Only visits the bot booked for this person can be cancelled through the bot."""
-        return self.db.execute("select 1 from booking_attempt where chat_id = ? and appointment_uid = ? and status = 'confirmed'",
-                               (chat_id, appointment_uid)).fetchone() is not None
-
     def cancelled(self, chat_id: int, appointment_uid: str) -> None:
         self.db.execute("update booking_attempt set status = 'cancelled', updated_at = current_timestamp "
                         "where chat_id = ? and appointment_uid = ?", (chat_id, appointment_uid))
