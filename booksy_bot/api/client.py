@@ -2,7 +2,7 @@
 from datetime import date, datetime
 
 from booksy_bot.api.http import HttpCore
-from booksy_bot.api.models import Ack, AppointmentDetailsResponse, AppointmentResponse, BusinessResponse, TimeSlotsResponse
+from booksy_bot.api.models import Ack, AppointmentDetailsResponse, BookingsResponse, AppointmentResponse, BusinessResponse, TimeSlotsResponse
 from booksy_bot.timezones import service_wall_clock
 
 BASE_URL = "https://pl.booksy.com/core/v2/customer_api"
@@ -51,3 +51,8 @@ class BooksyClient:
         return await self._http.request("POST", f"/me/appointments/{appointment_uid}/action/", Ack,
                                         json_body={"action": "cancel", "_version": version, "no_thumbs": "true"},
                                         idempotent=False)
+
+    async def my_bookings(self) -> BookingsResponse:
+        """My upcoming visits, booked by the bot or by hand (found in booksy.com's JS 2026-11-26)."""
+        return await self._http.request("GET", "/me/bookings", BookingsResponse,
+                                        params={"bookings_page": 1, "bookings_per_page": 100, "state": "active"})

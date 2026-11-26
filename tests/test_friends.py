@@ -37,6 +37,8 @@ def api(name, log, slots=SLOTS):
             return httpx.Response(200, json=data)
         if "/businesses/100001/" in req.url.path:
             return httpx.Response(200, json=BUSINESS)
+        if req.url.path.endswith("/me/bookings"):
+            return httpx.Response(200, json={"bookings": []})
         body = json.loads(req.content)
         at = body["subbookings"][0]["booked_from"]
         resp = copy.deepcopy(DRY)

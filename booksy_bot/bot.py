@@ -55,7 +55,7 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i r
 
 <b>Komendy</b>
 /list – aktywne powiadomienia (z przyciskiem „Zakończ”)
-/visits – wizyty zarezerwowane przez bota (z przyciskiem „Odwołaj”)
+/visits – Twoje wizyty w Booksy (z przyciskiem „Odwołaj”)
 /login – podłącz konto Booksy z telefonu
 /help – ta pomoc
 
@@ -131,7 +131,7 @@ Znajomy korzysta z własnego konta Booksy, ale z Twojego IP – ryzyko blokady d
 Nowy token Booksy z telefonu: /login."""
 
 BOT_COMMANDS = [{"command": "list", "description": "Aktywne powiadomienia"},
-                {"command": "visits", "description": "Wizyty zarezerwowane przez bota (odwołanie)"},
+                {"command": "visits", "description": "Twoje wizyty (odwołanie)"},
                 {"command": "login", "description": "Podłącz konto Booksy z telefonu"},
                 {"command": "help", "description": "Jak korzystać z bota"}]
 
@@ -319,6 +319,11 @@ async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now:
     """Fetch slots (unless given), remember them, and return a message only when something new appeared (or on the first check)."""
     current = set(slots if slots is not None else await find_slots(client, Query.of(m), now))
     new, first = storage.update_slots(m.id, current)
+    if new and not first:
+        before = {s[:7] for s in current - set(new)}
+        for month in sorted({s[:7] for s in new} - before):
+            # shortcut: a sold-out month that gets one cancellation also looks "opened"; the slot count tells them apart
+            log.info("monitor %s: month %s opened, %d new slots", m.id, month, sum(s.startswith(month) for s in new))
     if m.autobook and current:
         return await autobook(client, storage, m, sorted(current))
     if first and m.autobook:
@@ -341,6 +346,15 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
              and (storage.booking_status(m.business_id, s) or ('failed',))[0] in ('failed', 'cancelled')]   # not someone else's
     if not slots:
         return None
+    try:
+        taken |= await booking.visit_months(client, m.business_id)    # visits booked by hand in the app
+    except SessionExpired:
+        raise
+    except ApiError as e:
+        log.warning("monitor %s: visit list unavailable (%s), using the bot's own bookings only", m.id, e)  # do not miss the slot
+    slots = [s for s in slots if s[:7] not in taken]
+    if not slots:
+        return None
     b = BookArgs.of(m.business_id, m.variant_id, m.staffer_id, slots[0])
     try:
         msg = await booking.book(client, storage, b, m.chat_id)
@@ -351,7 +365,7 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
         start, end = Query.of(m).window(today())
         months = {f"{start.year + (start.month - 1 + i) // 12}-{(start.month - 1 + i) % 12 + 1:02d}"
                   for i in range((end.year - start.year) * 12 + end.month - start.month + 1)}
-        if months <= storage.booked_months(m.business_id, m.chat_id):
+        if months <= storage.booked_months(m.business_id, m.chat_id) | taken:
             storage.deactivate(m.chat_id, m.id)
             return f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}"
         return (f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}\n"
@@ -517,13 +531,14 @@ class Bot:
                 return "Brak aktywnych powiadomień. Wyślij link do salonu, żeby zacząć."
             return "\n".join(describe(m) for m in ms), [button(f"❌ Zakończ #{m.id} {m.service_name}", f"/stop {m.id}") for m in ms]
         if cmd == "/visits":
-            later = [(s, uid) for s, uid in self.storage.bookings(chat_id) if datetime.fromisoformat(s) > booking.now()]
-            if not later:
-                return "Brak nadchodzących wizyt zarezerwowanych przez bota."
-            return ("Wizyty zarezerwowane przez bota:\n" + fmt_slots([s for s, _ in later], limit=len(later)),
-                    [button(f"❌ Odwołaj {fmt_slot(s)}", f"/cancel {uid}") for s, uid in later])
+            vs = sorted((v for v in (await self.api.my_bookings()).bookings if v.active), key=lambda v: v.booked_from)
+            if not vs:
+                return "Brak nadchodzących wizyt."
+            lines = [f"• {fmt_slot(v.booked_from.isoformat())} – {html.escape(v.business.name)}" for v in vs]
+            return ("Twoje wizyty w Booksy:\n" + "\n".join(lines),
+                    [button(f"❌ Odwołaj {fmt_slot(v.booked_from.isoformat())}", f"/cancel {v.appointment_uid}") for v in vs])
         if cmd == "/cancel" and len(args) == 1:
-            a = await booking.cancellable(self.api, self.storage, chat_id, args[0])
+            a = await booking.cancellable(self.api, args[0])
             return (f"Odwołać wizytę <b>{a.booked_from:%d.%m %H:%M}</b> – {html.escape(a.business.name)}"
                     + (f", {html.escape(a.total)}" if a.total else "") + "?",
                     [button("✅ Tak, odwołaj", f"/cancelok {args[0]}")])
@@ -624,7 +639,8 @@ class Bot:
         watch = [button("🔔 Powiadamiaj o nowych terminach", f"/watch {q.encode()}")]
         if not slots:
             return head + body, watch + [button("🤖 Rezerwuj automatycznie, gdy się pojawi", f"/auto {q.encode()}")]
-        return head + body, book_buttons(q.business_id, q.variant_id, q.staffer_id, slots) + watch
+        return head + body, (book_buttons(q.business_id, q.variant_id, q.staffer_id, slots) + watch
+                             + [button("🤖 Rezerwuj automatycznie", f"/auto {q.encode()}")])
 
     async def cmd_auto(self, q: Query) -> Reply:
         """Explain what autobook will do and ask once more: it books a real appointment without asking again."""
@@ -632,10 +648,10 @@ class Bot:
         variant = find_variant(b, q.variant_id)[1]
         if variant.needs_payment:
             raise ValueError("ta usługa wymaga przedpłaty/kaucji – autorezerwacja niemożliwa, wybierz „Powiadamiaj”")
-        rule = ("<b>1 wizyta na każdy miesiąc z zakresu</b>, potem kończę. Wizyt zarezerwowanych ręcznie nie widzę – "
-                "jeśli masz już wizytę w którymś miesiącu, zacznij zakres od kolejnego.")
+        rule = ("<b>1 wizyta na każdy miesiąc z zakresu</b> (liczą się też wizyty w tym salonie umówione w aplikacji), "
+                "potem kończę.")
         return (f"🤖 <b>{html.escape(name)}</b> – {html.escape(b.name)} ({q.scope()})\n"
-                f"Gdy pojawi się wolny termin, zarezerwuję <b>pierwszy</b> bez pytania "
+                f"Zarezerwuję <b>pierwszy</b> wolny termin (także już dostępny) bez pytania "
                 f"({html.escape((variant.service_price or '?').replace(',00', ''))}, płatność na miejscu) i dam znać. {rule}\n"
                 "Odwołać wizytę możesz w /visits.",
                 [button("✅ Włącz autorezerwację", f"/autoon {q.encode()}")])

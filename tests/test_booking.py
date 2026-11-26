@@ -25,9 +25,21 @@ def fixed_now(monkeypatch):
     monkeypatch.setattr(bookingmod, "now", lambda: NOW)
 
 
-def booksy(dry=DRY, on_book=None, slots=None, business=None):
+BOOKINGS = json.loads((Path(__file__).parent / "fixtures/bookings.json").read_text(encoding="utf-8"))  # real GET me/bookings
+
+
+def visit(at="2026-11-27T14:00", business_id=100001):
+    """One active visit in the me/bookings shape."""
+    v = copy.deepcopy(BOOKINGS["bookings"][0])
+    v.update(active=True, status="A", booked_from=at, appointment_uid=555)
+    v["business"]["id"] = business_id
+    return v
+
+
+def booksy(dry=DRY, on_book=None, slots=None, business=None, visits=()):
     """dry_run echoes the requested time like the real API; on_book: Response or exception for the real POST.
-    slots/business: also serve time_slots and the salon (for bot-level tests); those are not recorded in `calls`."""
+    slots/business: also serve time_slots and the salon (for bot-level tests); those are not recorded in `calls`.
+    visits: my active visits served by GET me/bookings (not recorded either)."""
     calls = []
 
     def handler(req):
@@ -35,6 +47,8 @@ def booksy(dry=DRY, on_book=None, slots=None, business=None):
             return httpx.Response(200, json=slots)
         if business is not None and "/businesses/100001/" in req.url.path:
             return httpx.Response(200, json=business)
+        if req.url.path.endswith("/me/bookings"):
+            return httpx.Response(200, json={"bookings": list(visits), "bookings_count": len(visits)})
         if dry is None and req.url.path == DRY_PATH:
             return httpx.Response(400, json={"errors": [{"code": "matcher_conflict"}]})
         body = json.loads(req.content)
@@ -114,6 +128,13 @@ def test_timeout_on_booking_is_not_resent_and_blocks_retries():
     assert paths(calls).count(BOOK_PATH) == 1 and status(storage) == "unknown"
     assert "nie dała pewnej odpowiedzi" in asyncio.run(book(client, storage, SLOT))
     assert paths(calls).count(BOOK_PATH) == 1
+
+
+def test_unknown_outcome_confirmed_from_my_visits():
+    client, calls = booksy(on_book=httpx.ReadTimeout("slow"), visits=[visit()])
+    storage = Storage(":memory:")
+    assert "Zarezerwowano 27.11 14:00" in asyncio.run(book(client, storage, SLOT))
+    assert paths(calls).count(BOOK_PATH) == 1 and status(storage) == "confirmed"
 
 
 def test_server_error_on_booking_is_unknown_not_resent():
@@ -268,6 +289,35 @@ def test_autobook_one_visit_per_month_of_the_range(auto_bot):
     assert storage.active_monitors() == []                      # every month has a visit: done
     booked = [b["subbookings"][0]["booked_from"] for p, b in calls if p == BOOK_PATH]
     assert booked == ["2026-11-27 14:00", "2026-12-03 10:00"]
+
+
+def test_autobook_skips_month_with_a_visit_booked_by_hand(auto_bot):
+    from test_bot import SLOTS, add
+    from booksy_bot.bot import check_monitor
+    _, storage = auto_bot
+    m = add(storage, autobook=True, date_from="2026-11-27", date_to="2026-12-05")
+    two_months = copy.deepcopy(SLOTS)
+    two_months["time_slots"].append({"date": "2026-12-03", "slots": [{"t": "10:00", "p": ""}], "working_day": None})
+    other_salon = visit("2026-12-20T10:00", business_id=999)
+    client, calls = booksy(slots=two_months, visits=[visit("2026-11-30T09:00"), other_salon])   # November taken in the app
+    msg = asyncio.run(check_monitor(client, storage, m, NOW.date()))
+    assert "Zarezerwowano 03.12 10:00" in msg and storage.active_monitors() == []   # both months now have a visit
+
+
+def test_new_month_opening_is_logged_but_not_a_cancellation(caplog):
+    from test_bot import add
+    from booksy_bot.bot import check_monitor
+    storage = Storage(":memory:")
+    m = add(storage, date_from="2026-11-27", date_to="2026-12-31")
+    def slots(*days):
+        return {"time_slots": [{"date": d, "slots": [{"t": "10:00", "p": ""}, {"t": "11:00", "p": ""}], "working_day": None} for d in days]}
+    run = lambda s: asyncio.run(check_monitor(booksy(slots=s)[0], storage, m, NOW.date()))
+    run(slots("2026-11-27"))
+    with caplog.at_level("INFO", logger="bot"):
+        run(slots("2026-11-27", "2026-11-28"))                  # freed slot in an open month: not logged
+        assert "opened" not in caplog.text
+        run(slots("2026-11-27", "2026-11-28", "2026-12-01", "2026-12-02"))
+    assert "month 2026-12 opened, 4 new slots" in caplog.text
 
 
 def test_fast_window(monkeypatch):

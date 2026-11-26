@@ -252,7 +252,8 @@ def test_full_flow_with_typed_dates_and_times():
     assert "Wolne terminy (6)" in result[0] and "17:00" in result[0] and "14:00" not in result[0]
     assert storage.active_monitors() == []                     # searching does not watch
 
-    assert "Powiadomię" in run(bot, commands(result)[-1])
+    assert commands(result)[-1].startswith("/auto ")              # autobook offered even with free slots
+    assert "Powiadomię" in run(bot, commands(result)[-2])
     m = storage.active_monitors()[0]
     assert (m.date_from, m.date_to, m.time_from, m.time_to) == ("2026-11-27", "2026-11-28", 1020, 1140)
 
