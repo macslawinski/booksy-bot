@@ -150,9 +150,11 @@ def test_kick_removes_token_and_monitors(setup):
     join(bot)
     run(bot, f"/token {TOKEN}", FRIEND)
     storage.add_monitor(FRIEND, 100001, "S", "u", 300001, "X", -1, 4)
-    assert run(bot, f"/kick {FRIEND}") == "Usunięto."
+    assert run(bot, f"/kick {FRIEND}") == "Usunięto i zablokowano."
     assert storage.user(FRIEND) is None and storage.chat_monitors(FRIEND) == []
     assert run(bot, "/list", FRIEND) is None
+    assert run(bot, "/start", FRIEND) is None and run(bot, "test-pass", FRIEND) is None   # cannot rejoin with the password
+    assert storage.user(FRIEND) is None
 
 
 def test_booked_months_are_per_person():
