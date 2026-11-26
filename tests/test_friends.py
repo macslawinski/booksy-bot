@@ -194,3 +194,15 @@ def test_owner_can_set_token_from_phone_and_is_not_a_friend(setup):
     assert storage.user(OWNER)[1] == TOKEN
     assert run(bot, "/users") == "Brak znajomych."
     assert run(bot, f"/kick {OWNER}").startswith("Nie rozumiem")    # the owner cannot remove themselves
+
+
+def test_fast_window_fetches_slots_once_per_query(setup):
+    bot, storage, _, log = setup
+    join(bot)
+    run(bot, f"/token {TOKEN}", FRIEND)
+    kw = dict(date_from="2026-11-27", date_to="2026-11-28", autobook=True)
+    storage.add_monitor(OWNER, 100001, "S", "u", 300001, "X", -1, 4, **kw)
+    storage.add_monitor(FRIEND, 100001, "S", "u", 300001, "X", -1, 4, **kw)
+    log.clear()
+    asyncio.run(bot.check_all(fast=True))
+    assert [who for who, path, _ in log if path.endswith("/time_slots")] == ["owner"]
