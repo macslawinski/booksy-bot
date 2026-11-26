@@ -57,21 +57,46 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i r
 Powiadomienia z konkretnymi datami kończą się same po ostatnim dniu. Limit: 10 powiadomień, 92 dni.
 Gdy wygaśnie logowanie do Booksy, dostaniesz jedną wiadomość – wpisz nowy token do .env."""
 
+# Run on booksy.com (logged in, phone or PC): catches the X-Access-Token the page itself sends with its next API call.
+# Booksy's pages navigate without reloading (checked 2026-11-26), so the hook survives a tap on a category or salon.
+BOOKMARKLET = ("javascript:(()=>{const g=t=>{const m='/token '+t;try{navigator.clipboard.writeText(m)}catch(e){}"
+               "prompt('Skopiuj i wyślij botowi (zaraz otworzę Telegram):',m);location.href='https://t.me/BOT'};"
+               "const f=window.fetch;window.fetch=function(i,o){try{const t=new Headers((o&&o.headers)||"
+               "(i instanceof Request?i.headers:void 0)).get('x-access-token');if(t){window.fetch=f;g(t)}}catch(e){}"
+               "return f.apply(this,arguments)};alert('OK. Teraz kliknij dowolną kategorię albo salon.')})()")
+
+LOGIN_HELP = """<b>Logowanie z telefonu (raz na jakiś czas)</b>
+Bot nie loguje się sam (Booksy wymaga CAPTCHA), więc przekazujesz mu token ze swojej zalogowanej przeglądarki.
+
+<b>Jednorazowo – dodaj zakładkę:</b>
+1. Stuknij kod poniżej – skopiuje się.
+2. Chrome (Android): ⋮ → ☆ (dodaj zakładkę) → ✏️ edytuj → nazwa <b>Booksy bot</b>, w polu adresu wklej kod → zapisz.
+   Safari (iPhone): dodaj dowolną stronę do zakładek → edytuj zakładkę → nazwa <b>Booksy bot</b>, adres zastąp kodem.
+
+<b>Za każdym razem:</b>
+1. Otwórz <b>booksy.com</b> w tej przeglądarce i zaloguj się (jeśli trzeba).
+2. Wpisz w pasek adresu <b>Booksy bot</b> i stuknij zakładkę z listy (nie wyszukiwanie).
+3. Stuknij dowolną kategorię albo salon – pojawi się okienko z <code>/token …</code>, tekst jest już w schowku.
+4. Otworzy się Telegram – wklej i wyślij. Wiadomość z tokenem od razu usuwam.
+
+<code>{code}</code>"""
+
 FRIEND_HELP = """
 
 <b>Twoje konto Booksy</b>
-Bot korzysta z <b>Twojego</b> konta (regulamin Booksy: jedno konto na osobę). Raz na jakiś czas wklej token:
-na komputerze zaloguj się na booksy.com → F12 → Network → kliknij dowolne żądanie do <code>pl.booksy.com/core</code> →
-Request Headers → skopiuj wartość <code>X-Access-Token</code> i wyślij tu: <code>/token WARTOŚĆ</code>.
-Wiadomość z tokenem od razu usuwam. Token daje dostęp do Twojego konta Booksy – wysyłaj go tylko tu.
+Bot korzysta z <b>Twojego</b> konta (regulamin Booksy: jedno konto na osobę). Raz na jakiś czas podłącz je:
+/login – instrukcja dla telefonu. Wiadomość z tokenem od razu usuwam. Token daje dostęp do Twojego konta Booksy –
+wysyłaj go tylko tu.
 Limit: 3 powiadomienia, 1 autorezerwacja. Do tego samego terminu pierwszeństwo ma właściciel bota."""
 
 OWNER_HELP = """
 
 <b>Znajomi</b>
-/invite – jednorazowy kod zaproszenia, /users – lista, /kick ID – usuń (z tokenem i powiadomieniami)."""
+/invite – jednorazowy kod zaproszenia, /users – lista, /kick ID – usuń (z tokenem i powiadomieniami).
+Nowy token Booksy z telefonu: /login."""
 
 BOT_COMMANDS = [{"command": "list", "description": "Aktywne powiadomienia"},
+                {"command": "login", "description": "Podłącz konto Booksy z telefonu"},
                 {"command": "help", "description": "Jak korzystać z bota"}]
 
 TIME_CHOICES = [("Dowolna pora", 0, DAY_END), ("Rano (do 12)", 0, 12 * 60),
@@ -313,6 +338,7 @@ class Bot:
         self.tg, self.client, self.storage, self.owner = tg, client, storage, owner_chat_id
         self._friend_client = friend_client
         self._friend_clients: dict[int, BooksyClient] = {}
+        self.username = "Booksy_booking_bot"   # replaced by getMe at start; used in the /login bookmarklet
         self._alerted: set[str] = set()    # one alert per problem until it is resolved
         # What typed text means right now, per chat: ("service", salon) / ("dates", args) / ("times", args).
         # shortcut: in memory, lost on restart (user just sends the link again); persist if that becomes annoying.
@@ -334,8 +360,8 @@ class Bot:
 
     def token_message(self, chat_id: int) -> str:
         if chat_id == self.owner:
-            return "🔑 Token Booksy wygasł. Zaloguj się na booksy.com i wpisz nowy BOOKSY_ACCESS_TOKEN do .env (bez restartu)."
-        return "🔑 Brak ważnego tokenu Booksy – wyślij nowy: <code>/token WARTOŚĆ</code> (jak go zdobyć: /help)."
+            return "🔑 Token Booksy wygasł. Podłącz konto ponownie: /login (albo nowy BOOKSY_ACCESS_TOKEN w .env)."
+        return "🔑 Brak ważnego tokenu Booksy – podłącz konto: /login."
 
     # ---------- commands ----------
 
@@ -374,10 +400,12 @@ class Bot:
         cmd = cmd.split("@")[0].lower()
         if cmd in ("/start", "/help"):
             return HELP + (OWNER_HELP if chat_id == self.owner else FRIEND_HELP)
-        if cmd == "/token" and chat_id != self.owner:
+        if cmd == "/login":
+            return LOGIN_HELP.replace("{code}", html.escape(BOOKMARKLET.replace("/BOT'", f"/{self.username}'"), quote=False))
+        if cmd == "/token":
             if len(args) != 1 or len(args[0]) < 20:
-                return "Wyślij: <code>/token WARTOŚĆ</code> (jak go zdobyć: /help)."
-            self.storage.set_token(chat_id, args[0])
+                return "Wyślij: <code>/token WARTOŚĆ</code> (jak go zdobyć z telefonu: /login)."
+            self.storage.set_token(chat_id, args[0], os.environ.get("BOOKSY_FINGERPRINT") if chat_id == self.owner else None)
             self._alerted.discard(f"token:{chat_id}")
             return "✅ Token zapisany, wiadomość z nim usunięta. Wyślij link do salonu, żeby zacząć."
         if cmd == "/invite" and chat_id == self.owner:
@@ -386,8 +414,9 @@ class Bot:
                     "Znajomy korzysta z własnego konta Booksy, ale z Twojego IP (Wyse) – ryzyko blokady dotyczy też Ciebie.")
         if cmd == "/users" and chat_id == self.owner:
             us = self.storage.users()
-            return "\n".join(f"<code>{c}</code> {html.escape(n)} – {'token ✅' if t else 'bez tokenu'}" for c, n, t in us) or "Brak znajomych."
-        if cmd == "/kick" and chat_id == self.owner and len(args) == 1 and args[0].isdigit():
+            return "\n".join(f"<code>{c}</code> {html.escape(n)} – {'token ✅' if t else 'bez tokenu'}"
+                             for c, n, t in us if c != self.owner) or "Brak znajomych."
+        if cmd == "/kick" and chat_id == self.owner and len(args) == 1 and args[0].isdigit() and int(args[0]) != self.owner:
             self._friend_clients.pop(int(args[0]), None)
             return "Usunięto." if self.storage.remove_user(int(args[0])) else "Nie ma takiego użytkownika."
         if cmd == "/services" and len(args) == 1:
@@ -693,16 +722,21 @@ async def run() -> None:
     if not os.environ.get("TELEGRAM_BOT_TOKEN"):
         raise SystemExit("missing TELEGRAM_BOT_TOKEN in .env")
     owner = os.environ.get("TELEGRAM_CHAT_ID")
-    client, http = make_client(token_provider=fresh_token)
-    tg = Telegram(os.environ["TELEGRAM_BOT_TOKEN"])
     storage = Storage(os.environ.get("BOT_DB", "booksy_bot.sqlite3"))
-
+    owner_id = int(owner) if owner else None
+    # the owner's token: the latest /token from the phone, else .env (re-read on every request)
+    client, http = make_client(token_provider=lambda: (owner_id and (storage.user(owner_id) or ("", None))[1]) or fresh_token())
+    tg = Telegram(os.environ["TELEGRAM_BOT_TOKEN"])
     def friend_client(chat_id: int) -> BooksyClient:
         # shortcut: friends' HTTP clients are never closed; fine for a few long-lived friends.
         fingerprint = (storage.user(chat_id) or ("", None, None))[2]
         return make_client(token_provider=lambda: (storage.user(chat_id) or ("", None))[1], fingerprint=fingerprint)[0]
 
-    bot = Bot(tg, client, storage, int(owner) if owner else None, friend_client)
+    bot = Bot(tg, client, storage, owner_id, friend_client)
+    try:
+        bot.username = (await tg.call("getMe"))["username"]
+    except (TelegramError, KeyError) as e:
+        log.warning("telegram getMe: %s", e)
     lo, hi = interval()
     window = FastWindow.parse(os.environ["FAST_WINDOW"]) if os.environ.get("FAST_WINDOW") else None
     try:

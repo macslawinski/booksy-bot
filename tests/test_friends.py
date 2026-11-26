@@ -75,7 +75,7 @@ def test_invite_is_one_time_and_strangers_are_ignored(setup):
     assert run(bot, "/list", STRANGER) is None
     assert run(bot, "/start wrong", STRANGER) is None
     welcome, code = join(bot)
-    assert "Twoje konto Booksy" in welcome and "/token" in welcome
+    assert "Twoje konto Booksy" in welcome and "/login" in welcome
     assert any("Dołączył(a) Ania" in text for chat, text in tg.sent if chat == OWNER)
     assert run(bot, f"/start {code}", STRANGER) is None             # used already
     assert "Ania" in run(bot, "/users") and "bez tokenu" in run(bot, "/users")
@@ -132,7 +132,7 @@ def test_expired_friend_token_does_not_stop_the_owner(setup, monkeypatch):
     storage.add_monitor(OWNER, 100001, "S", "u", 300001, "X", -1, 4)
     monkeypatch.setattr(botmod.random, "uniform", lambda a, b: 0)   # no pause between monitors
     asyncio.run(bot.check_all())
-    assert any(c == FRIEND and "/token" in t for c, t in tg.sent)
+    assert any(c == FRIEND and "/login" in t for c, t in tg.sent)
     assert any(c == OWNER and "Powiadomię" in t for c, t in tg.sent)
 
 
@@ -151,3 +151,21 @@ def test_booked_months_are_per_person():
     s.start_booking(100001, "2026-12-03T10:00:00+01:00", OWNER)
     s.finish_booking(100001, "2026-12-03T10:00:00+01:00", "confirmed")
     assert s.booked_months(100001, OWNER) == {"2026-12"} and s.booked_months(100001, FRIEND) == set()
+
+
+def test_login_gives_phone_bookmarklet_for_this_bot(setup):
+    bot, _, _, _ = setup
+    bot.username = "Test_bot"
+    reply = run(bot, "/login")
+    code = reply.split("<code>")[-1].split("</code>")[0]
+    assert code.startswith("javascript:") and "https://t.me/Test_bot'" in code
+    assert "&amp;&amp;" in code and "&&" not in code               # HTML-escaped for Telegram, still copies as &&
+    assert "x-access-token" in code and "Booksy bot" in reply
+
+
+def test_owner_can_set_token_from_phone_and_is_not_a_friend(setup):
+    bot, storage, _, _ = setup
+    assert "Token zapisany" in run(bot, f"/token {TOKEN}")
+    assert storage.user(OWNER)[1] == TOKEN
+    assert run(bot, "/users") == "Brak znajomych."
+    assert run(bot, f"/kick {OWNER}").startswith("Nie rozumiem")    # the owner cannot remove themselves

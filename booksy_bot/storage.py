@@ -123,7 +123,9 @@ class Storage:
     def users(self) -> list[tuple[int, str, bool]]:
         return [(r[0], r[1], r[2] is not None) for r in self.db.execute("select chat_id, name, token from user order by created_at")]
 
-    def set_token(self, chat_id: int, token: str) -> None:
+    def set_token(self, chat_id: int, token: str, fingerprint: str | None = None) -> None:
+        """Friends are already registered; the owner gets a row on the first /token (fingerprint from .env)."""
+        self.db.execute("insert or ignore into user(chat_id, fingerprint) values (?, ?)", (chat_id, fingerprint or str(uuid.uuid4())))
         self.db.execute("update user set token = ? where chat_id = ?", (token, chat_id))
         self.db.commit()
 

@@ -41,7 +41,14 @@ Uzupełnij `.env`:
 - `TELEGRAM_CHAT_ID` — zostaw puste, uruchom bota i wyślij mu `/start`; odpowie Twoim chat id. Bot obsługuje tylko ten jeden czat.
 - `BOOKSY_API_KEY`, `BOOKSY_ACCESS_TOKEN` — zaloguj się na booksy.com, F12 → Network → dowolne żądanie do
   `pl.booksy.com/core/...` → nagłówki `X-Api-Key` i `X-Access-Token`. Bot sam się nie loguje (logowanie wymaga hCaptcha);
-  po wygaśnięciu tokenu wklej nowy do `.env` — restart niepotrzebny.
+  po wygaśnięciu tokenu wklej nowy do `.env` — restart niepotrzebny. Z telefonu: `/login` w bocie (niżej).
+
+### Token z telefonu (`/login`)
+
+Bot przysyła kod zakładki (bookmarklet). Zapisujesz go raz jako zakładkę w przeglądarce telefonu. Potem: zaloguj się na
+booksy.com, otwórz zakładkę, stuknij dowolną kategorię albo salon — zakładka łapie `X-Access-Token` z pierwszego zapytania
+strony do API, kopiuje `/token …` i otwiera Telegram; wklejasz i wysyłasz (bot usuwa tę wiadomość). Działa dla właściciela
+(nadpisuje token z `.env`) i dla znajomych.
 
 Start:
 
@@ -60,7 +67,7 @@ Opcjonalnie w `.env`:
 ## Znajomi (wspólny bot)
 
 Właściciel (`TELEGRAM_CHAT_ID`) zaprasza znajomych komendą `/invite` (jednorazowy kod; znajomy wysyła `/start KOD`).
-Każdy znajomy podłącza **własne** konto Booksy (`/token WARTOŚĆ`, wiadomość jest od razu usuwana) — regulamin Booksy
+Każdy znajomy podłącza **własne** konto Booksy (`/login` z telefonu albo `/token WARTOŚĆ`; wiadomość jest od razu usuwana) — regulamin Booksy
 to jedno konto na osobę. Znajomy ma osobne powiadomienia i rezerwacje, limit 3 powiadomień i 1 autorezerwacji.
 Właściciel ma pierwszeństwo: w każdym cyklu jego autorezerwacje idą pierwsze, znajomi dostają kolejne wolne terminy.
 `/users` – lista, `/kick ID` – usunięcie (token i powiadomienia).
