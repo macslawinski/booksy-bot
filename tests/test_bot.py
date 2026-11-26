@@ -213,6 +213,7 @@ def test_full_flow_with_typed_dates_and_times():
     found = run(bot, "MESKIE")                                 # search by part of the name
     assert labels(found) == ["1", "2"] and "Dziecięce" not in found[0] and "Maszynka" in found[0]
     assert "Nie znalazłem" in run(bot, "koloryzacja")
+    assert "wybierz 1–2" in run(bot, "7")                      # typed number outside the last list
 
     assert "Wpisz datę" in run(bot, commands(found)[0])        # single staffer -> straight to typing dates
     assert "Błąd" in run(bot, "jutro")                         # bad input: question stays open
@@ -228,6 +229,12 @@ def test_full_flow_with_typed_dates_and_times():
     assert "Powiadomię" in run(bot, commands(result)[-1])
     m = storage.active_monitors()[0]
     assert (m.date_from, m.date_to, m.time_from, m.time_to) == ("2026-11-27", "2026-11-28", 1020, 1140)
+
+
+def test_typed_service_number_works_like_the_button():
+    bot, _ = new_bot()
+    run(bot, "https://booksy.com/pl-pl/dl/show-business/100001")
+    assert run(bot, "1") == run(bot, "/pick 100001 300001")
 
 
 def test_preset_time_buttons():
