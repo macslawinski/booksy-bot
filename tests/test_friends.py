@@ -184,7 +184,7 @@ def test_login_gives_phone_bookmarklet_for_this_bot(setup):
     reply = run(bot, "/login")
     code = reply.split("<code>")[-1].split("</code>")[0]
     assert code.startswith("javascript:") and "https://t.me/Test_bot'" in code
-    assert "&amp;&amp;" in code and "&&" not in code               # HTML-escaped for Telegram, still copies as &&
+    assert code.isascii() and " " not in code and "&" not in code and "<" not in code   # Safari: encoded ASCII
     assert "x-access-token" in code and "Booksy bot" in reply
 
 
