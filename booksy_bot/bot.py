@@ -312,9 +312,10 @@ def salon_link(url: str) -> str:
     return f'\n<a href="{html.escape(url)}">Otwórz salon na Booksy</a>'
 
 
-async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now: date | None = None) -> Reply | None:
-    """Fetch slots, remember them, and return a message only when something new appeared (or on the first check)."""
-    current = set(await find_slots(client, Query.of(m), now))
+async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now: date | None = None,
+                        slots: list[str] | None = None) -> Reply | None:
+    """Fetch slots (unless given), remember them, and return a message only when something new appeared (or on the first check)."""
+    current = set(slots if slots is not None else await find_slots(client, Query.of(m), now))
     new, first = storage.update_slots(m.id, current)
     if m.autobook and current:
         return await autobook(client, storage, m, sorted(current))
@@ -661,6 +662,9 @@ class Bot:
     async def check_all(self, fast: bool = False) -> None:
         """fast = inside the booking-opening window: only autobook monitors, no pauses between them."""
         expired: set[int] = set()
+        # fast: one time_slots per query per cycle, through whichever account asks first (fewer requests from our IP).
+        # Not outside the window, so each person's token is still checked there before the window opens.
+        fetched: dict[Query, list[str]] = {}
         # the owner first: in the same cycle their monitors book before friends' (priority on the same barber)
         for m in sorted(self.storage.active_monitors(), key=lambda m: m.chat_id != self.owner):
             if (fast and not m.autobook) or m.chat_id in expired:
@@ -669,8 +673,11 @@ class Bot:
                 self.storage.deactivate(m.chat_id, m.id)
                 await self.tg.send(m.chat_id, f"⌛ Zakres dat minął – kończę {describe(m)}")
                 continue
+            client, q = self.client_for(m.chat_id), Query.of(m)
             try:
-                msg = await check_monitor(self.client_for(m.chat_id), self.storage, m)
+                if fast and q not in fetched:
+                    fetched[q] = await find_slots(client, q)
+                msg = await check_monitor(client, self.storage, m, slots=fetched.get(q))
             except SessionExpired:
                 expired.add(m.chat_id)                        # one person's token: the others go on
                 await self.alert(f"token:{m.chat_id}", m.chat_id, "Powiadomienia wstrzymane. " + self.token_message(m.chat_id))
