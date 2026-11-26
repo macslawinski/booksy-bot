@@ -13,6 +13,7 @@ import os
 import random
 import re
 import unicodedata
+import urllib.parse
 from argparse import ArgumentTypeError
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -61,11 +62,21 @@ Gdy wygaśnie logowanie do Booksy, dostaniesz jedną wiadomość – wpisz nowy 
 
 # Run on booksy.com (logged in, phone or PC): catches the X-Access-Token the page itself sends with its next API call.
 # Booksy's pages navigate without reloading (checked 2026-11-26), so the hook survives a tap on a category or salon.
-BOOKMARKLET = ("javascript:(()=>{const g=t=>{const m='/token '+t;try{navigator.clipboard.writeText(m)}catch(e){}"
-               "prompt('Skopiuj i wyślij botowi (zaraz otworzę Telegram):',m);location.href='https://t.me/BOT'};"
-               "const f=window.fetch;window.fetch=function(i,o){try{const t=new Headers((o&&o.headers)||"
-               "(i instanceof Request?i.headers:void 0)).get('x-access-token');if(t){window.fetch=f;g(t)}}catch(e){}"
-               "return f.apply(this,arguments)};alert('OK. Teraz kliknij dowolną kategorię albo salon.')})()")
+# ASCII only and percent-encoded: Safari on iPhone refuses to run a bookmark whose address has raw spaces/Polish letters.
+# Hooks fetch and XHR (the mobile site was not checked; the desktop one uses fetch).
+BOOKMARKLET_JS = ("(()=>{let d=0;const g=t=>{if(d)return;d=1;const m='/token '+t;"
+                  "try{navigator.clipboard.writeText(m)}catch(e){}"
+                  "prompt('Skopiuj i wyslij botowi:',m);location.href='https://t.me/BOT'};"
+                  "const f=window.fetch;window.fetch=function(i,o){try{const t=new Headers((o&&o.headers)||"
+                  "(i instanceof Request?i.headers:void 0)).get('x-access-token');if(t)g(t)}catch(e){}"
+                  "return f.apply(this,arguments)};"
+                  "const s=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.setRequestHeader="
+                  "function(k,v){if(/^x-access-token$/i.test(k)&&v)g(v);return s.apply(this,arguments)};"
+                  "alert('OK. Teraz stuknij dowolna kategorie albo salon.')})()")
+
+
+def bookmarklet(bot_username: str) -> str:
+    return "javascript:" + urllib.parse.quote(BOOKMARKLET_JS.replace("t.me/BOT'", f"t.me/{bot_username}'"), safe="()[]{};,.:/'+=!*_~-|")
 
 LOGIN_HELP = """<b>Logowanie z telefonu (raz na jakiś czas)</b>
 Bot nie loguje się sam (Booksy wymaga CAPTCHA), więc przekazujesz mu token ze swojej zalogowanej przeglądarki.
@@ -73,11 +84,12 @@ Bot nie loguje się sam (Booksy wymaga CAPTCHA), więc przekazujesz mu token ze 
 <b>Jednorazowo – dodaj zakładkę:</b>
 1. Stuknij kod poniżej – skopiuje się.
 2. Chrome (Android): ⋮ → ☆ (dodaj zakładkę) → ✏️ edytuj → nazwa <b>Booksy bot</b>, w polu adresu wklej kod → zapisz.
-   Safari (iPhone): dodaj dowolną stronę do zakładek → edytuj zakładkę → nazwa <b>Booksy bot</b>, adres zastąp kodem.
+   Safari (iPhone): na dowolnej stronie Udostępnij → Dodaj zakładkę → zapisz. Potem 📖 Zakładki → Edytuj → stuknij ją →
+   nazwa <b>Booksy bot</b>, adres usuń w całości i wklej kod → Gotowe. Kodu NIE wklejaj w pasek adresu – Safari go nie uruchomi.
 
 <b>Za każdym razem:</b>
 1. Otwórz <b>booksy.com</b> w tej przeglądarce i zaloguj się (jeśli trzeba).
-2. Wpisz w pasek adresu <b>Booksy bot</b> i stuknij zakładkę z listy (nie wyszukiwanie).
+2. Otwórz zakładkę <b>Booksy bot</b>: Safari – 📖 Zakładki → Booksy bot; Chrome – wpisz w pasek „Booksy bot” i stuknij zakładkę z listy.
 3. Stuknij dowolną kategorię albo salon – pojawi się okienko z <code>/token …</code>, tekst jest już w schowku.
 4. Otworzy się Telegram – wklej i wyślij. Wiadomość z tokenem od razu usuwam.
 
@@ -430,7 +442,7 @@ class Bot:
         if cmd in ("/start", "/help"):
             return HELP + (OWNER_HELP if chat_id == self.owner else FRIEND_HELP)
         if cmd == "/login":
-            return LOGIN_HELP.replace("{code}", html.escape(BOOKMARKLET.replace("/BOT'", f"/{self.username}'"), quote=False))
+            return LOGIN_HELP.replace("{code}", bookmarklet(self.username))
         if cmd == "/token":
             if len(args) != 1 or len(args[0]) < 20:
                 return "Wyślij: <code>/token WARTOŚĆ</code> (jak go zdobyć z telefonu: /login)."
