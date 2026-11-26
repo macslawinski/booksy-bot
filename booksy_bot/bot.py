@@ -42,7 +42,7 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i r
 
 <b>Jak szukać</b>
 1. Wyślij link do salonu albo w aplikacji Booksy: salon → Udostępnij → ten bot.
-2. Wybierz usługę z listy albo wpisz część nazwy (np. <i>broda</i>, <i>meskie</i>).
+2. Wybierz usługę: stuknij albo wpisz jej numer, albo wpisz część nazwy (np. <i>broda</i>, <i>meskie</i>).
 3. Wybierz pracownika (gdy jest kilku).
 4. Wpisz datę albo zakres dat, np. <code>5.12</code> lub <code>1.12-15.12</code>.
 5. Godziny: przycisk albo „🕐 Wpisz godziny”, np. <code>16-20</code> lub <code>16:30-19:00</code>.
@@ -51,14 +51,15 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i r
 7. „📅 Rezerwuj” pod terminem: bot sprawdza, czy termin jest wolny i ile kosztuje, i pyta o potwierdzenie.
    Terminów z przedpłatą/kaucją bot nie rezerwuje.
 8. Gdy nie ma terminów: „🤖 Rezerwuj automatycznie” – bot sam zarezerwuje <b>pierwszy</b> wolny termin,
-   który się pojawi, i napisze, co zarezerwował. Potem kończy. Wyłączysz w /list.
+   który się pojawi (1 wizyta na każdy miesiąc z zakresu), i napisze, co zarezerwował. Wyłączysz w /list.
 
 <b>Komendy</b>
 /list – aktywne powiadomienia (z przyciskiem „Zakończ”)
+/login – podłącz konto Booksy z telefonu
 /help – ta pomoc
 
 Powiadomienia z konkretnymi datami kończą się same po ostatnim dniu. Limit: 10 powiadomień, 92 dni.
-Gdy wygaśnie logowanie do Booksy, dostaniesz jedną wiadomość – wpisz nowy token do .env."""
+Gdy wygaśnie logowanie do Booksy, dostaniesz jedną wiadomość – wtedy /login."""
 
 # Run on booksy.com (logged in, phone or PC): catches the X-Access-Token the page itself sends with its next API call.
 # Booksy's pages navigate without reloading (checked 2026-11-26), so the hook survives a tap on a category or salon.
@@ -154,12 +155,17 @@ def grid(items: list[tuple[str, str]], per_row: int = 5) -> Buttons:
             for i in range(0, len(items), per_row)]
 
 
+WEEKDAYS = ("pon", "wt", "śr", "czw", "pt", "sob", "niedz")
+
+
 def fmt_slot(iso: str) -> str:
-    return datetime.fromisoformat(iso).strftime("%a %d.%m %H:%M")
+    """'pt 27.11, 14:00' – Polish weekday regardless of the server locale."""
+    t = datetime.fromisoformat(iso)
+    return f"{WEEKDAYS[t.weekday()]} {t:%d.%m}, {t:%H:%M}"
 
 
 def fmt_slots(slots: list[str], limit: int = 10) -> str:
-    lines = [fmt_slot(s) for s in slots[:limit]]
+    lines = [f"• {fmt_slot(s)}" for s in slots[:limit]]
     if len(slots) > limit:
         lines.append(f"… i {len(slots) - limit} więcej")
     return "\n".join(lines)
@@ -415,7 +421,7 @@ class Bot:
         except SessionExpired:
             return self.token_message(chat_id)
         except (ValueError, ArgumentTypeError, ApiError) as e:
-            return f"Błąd: {html.escape(str(e))[:300]}"
+            return f"⚠️ Błąd: {html.escape(str(e))[:300]}"
         finally:
             _api.reset(token)
 
@@ -433,18 +439,18 @@ class Bot:
             return await self.welcome(chat_id, name)
         if tries > 1:
             self.joining[chat_id] = tries - 1
-            return f"Złe hasło. Zostało prób: {tries - 1}."
+            return f"❌ Złe hasło. Zostało prób: {tries - 1}."
         self.storage.block(chat_id)
         log.warning("chat %s blocked after wrong passwords", chat_id)
         await self.tg.send(self.owner, f"⚠️ {PASSWORD_TRIES}× złe hasło od {html.escape(name) or chat_id} "
                                        f"(<code>{chat_id}</code>) – zablokowany.")
-        return "Złe hasło. Dostęp zablokowany."
+        return "❌ Złe hasło. Dostęp zablokowany."
 
     async def welcome(self, chat_id: int, name: str) -> str:
         self.storage.add_user(chat_id, name)
         log.info("friend %s joined", chat_id)
         await self.tg.send(self.owner, f"👋 Dołączył(a) {html.escape(name) or chat_id} (<code>{chat_id}</code>).")
-        return "Witaj! Najpierw podłącz swoje konto Booksy." + FRIEND_HELP
+        return "👋 Witaj! Najpierw podłącz swoje konto Booksy: /login" + FRIEND_HELP
 
     async def _dispatch(self, chat_id: int, text: str) -> Reply:
         if not text.startswith("/"):
@@ -469,7 +475,7 @@ class Bot:
             return "✅ Token zapisany, wiadomość z nim usunięta. Wyślij link do salonu, żeby zacząć."
         if cmd == "/users" and chat_id == self.owner:
             us = self.storage.users()
-            return "\n".join(f"<code>{c}</code> {html.escape(n)} – {'token ✅' if t else 'bez tokenu'}"
+            return "\n".join(f"<code>{c}</code> {html.escape(n) or '(bez imienia)'} – {'token ✅' if t else 'bez tokenu ⚠️'}"
                              for c, n, t in us if c != self.owner) or "Brak znajomych."
         if cmd == "/kick" and chat_id == self.owner and len(args) == 1 and args[0].isdigit() and int(args[0]) != self.owner:
             who = int(args[0])
@@ -477,7 +483,7 @@ class Bot:
             self.joining.pop(who, None)
             removed = self.storage.remove_user(who)
             self.storage.block(who)          # the password is shared: without this they could just join again
-            return "Usunięto i zablokowano." if removed else "Nie ma takiego użytkownika (czat zablokowany)."
+            return "✅ Usunięto i zablokowano." if removed else "Nie ma takiego użytkownika (czat zablokowany)."
         if cmd == "/services" and len(args) == 1:
             return await self.cmd_services(chat_id, args[0])
         if cmd == "/pick" and len(args) == 2:
@@ -508,8 +514,8 @@ class Bot:
             return "\n".join(describe(m) for m in ms), [button(f"❌ Zakończ #{m.id} {m.service_name}", f"/stop {m.id}") for m in ms]
         if cmd == "/stop" and len(args) == 1 and args[0].lstrip("#").isdigit():
             ok = self.storage.deactivate(chat_id, int(args[0].lstrip("#")))
-            return "Zakończono." if ok else "Nie ma takiego aktywnego powiadomienia."
-        return "Nie rozumiem tej komendy.\n\n" + HELP
+            return "✅ Zakończono." if ok else "Nie ma takiego aktywnego powiadomienia."
+        return "Nie rozumiem tej komendy. Pomoc: /help"
 
     async def typed(self, chat_id: int, text: str) -> Reply:
         """Free text answering the last question; on a parse error the question stays open (just type again)."""
@@ -613,14 +619,14 @@ class Bot:
                 "jeśli masz już wizytę w którymś miesiącu, zacznij zakres od kolejnego.")
         return (f"🤖 <b>{html.escape(name)}</b> – {html.escape(b.name)} ({q.scope()})\n"
                 f"Gdy pojawi się wolny termin, zarezerwuję <b>pierwszy</b> bez pytania "
-                f"({html.escape(variant.service_price or '?')}, płatność na miejscu) i dam znać. {rule}\n"
+                f"({html.escape((variant.service_price or '?').replace(',00', ''))}, płatność na miejscu) i dam znać. {rule}\n"
                 "Odwołać wizytę możesz w aplikacji Booksy.",
                 [button("✅ Włącz autorezerwację", f"/autoon {q.encode()}")])
 
     async def cmd_book(self, b: BookArgs) -> Reply:
         """First step: dry_run shows whether the slot is still free and what it costs; nothing is booked yet."""
         r = await booking.check(self.api, b)
-        when = f"{b.start:%a %d.%m %H:%M}"
+        when = fmt_slot(b.start.isoformat())
         if r.needs_payment:
             return f"💳 {when} wymaga przedpłaty albo kaucji – bot nie płaci. Zarezerwuj ręcznie w Booksy."
         price = f", {html.escape(r.appointment.total)}" if r.appointment.total else ""
