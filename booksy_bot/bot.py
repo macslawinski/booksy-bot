@@ -13,11 +13,9 @@ import os
 import random
 import re
 import unicodedata
-import urllib.parse
 from argparse import ArgumentTypeError
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timezone
 
 from booksy_bot.api.client import ANY_STAFFER, BooksyClient
 from booksy_bot.api.http import ApiChanged, ApiError, SessionExpired
@@ -28,6 +26,9 @@ from booksy_bot.cli import business_id_arg, fresh_token, load_env, make_client
 from booksy_bot.storage import DAY_END, Monitor, Storage
 from booksy_bot.telegram import Telegram, TelegramError
 from booksy_bot.timezones import SERVICE_TZ
+from booksy_bot.query import Query, parse_dates, parse_times
+from booksy_bot.scheduler import FastWindow, interval, next_delay
+from booksy_bot.texts import BOT_COMMANDS, FRIEND_HELP, HELP, LOGIN_HELP, OWNER_HELP, bookmarklet
 
 log = logging.getLogger("bot")
 MAX_MONITORS = 10          # per chat; keeps polling volume modest (luxmed-bot used the same limit)
@@ -35,105 +36,7 @@ MAX_AUTOBOOK = 3           # unattended bookings at once; Booksy terms: no mass 
 FRIEND_MAX_MONITORS = 3    # friends share the owner's IP: keep their traffic small
 FRIEND_MAX_AUTOBOOK = 1
 PASSWORD_TRIES = 3          # wrong bot passwords before the chat is blocked for good
-MAX_DAYS = 92              # salons open bookings up to ~2 months ahead
 LIST_LIMIT = 30            # service buttons per message; more -> type part of the name
-
-HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i rezerwuje po Twoim potwierdzeniu.
-
-<b>Jak szukać</b>
-1. Wyślij link do salonu albo w aplikacji Booksy: salon → Udostępnij → ten bot.
-2. Wybierz usługę: stuknij albo wpisz jej numer, albo wpisz część nazwy (np. <i>broda</i>, <i>meskie</i>).
-3. Wybierz pracownika (gdy jest kilku).
-4. Wpisz datę albo zakres dat, np. <code>5.12</code> lub <code>1.12-15.12</code>.
-5. Godziny: przycisk albo „🕐 Wpisz godziny”, np. <code>16-20</code> lub <code>16:30-19:00</code>.
-6. Dostajesz wolne terminy od razu. Przycisk „🔔 Powiadamiaj” włącza sprawdzanie co kilka minut –
-   napiszę tylko o <b>nowych</b> terminach (np. gdy ktoś odwoła wizytę).
-7. „📅 Rezerwuj” pod terminem: bot sprawdza, czy termin jest wolny i ile kosztuje, i pyta o potwierdzenie.
-   Terminów z przedpłatą/kaucją bot nie rezerwuje.
-8. Gdy nie ma terminów: „🤖 Rezerwuj automatycznie” – bot sam zarezerwuje <b>pierwszy</b> wolny termin,
-   który się pojawi (1 wizyta na każdy miesiąc z zakresu), i napisze, co zarezerwował. Wyłączysz w /list.
-
-<b>Komendy</b>
-/list – aktywne powiadomienia (z przyciskiem „Zakończ”)
-/visits – Twoje wizyty w Booksy (z przyciskiem „Odwołaj”)
-/login – podłącz konto Booksy z telefonu
-/help – ta pomoc
-
-Powiadomienia z konkretnymi datami kończą się same po ostatnim dniu. Limit: 10 powiadomień, 92 dni.
-Gdy wygaśnie logowanie do Booksy, dostaniesz jedną wiadomość – wtedy /login."""
-
-# Run on booksy.com (logged in, phone or PC): catches the X-Access-Token the page itself sends with its next API call.
-# Booksy's pages navigate without reloading (checked 2026-11-26), so the hook survives a tap on a category or salon.
-# ASCII only and percent-encoded: Safari on iPhone refuses to run a bookmark whose address has raw spaces/Polish letters.
-# Hooks fetch and XHR (the mobile site was not checked; the desktop one uses fetch).
-BOOKMARKLET_JS = ("(()=>{let d=0;const g=t=>{if(d)return;d=1;const m='/token '+t;"
-                  "try{navigator.clipboard.writeText(m)}catch(e){}"
-                  "prompt('Skopiuj i wyslij botowi:',m);location.href='https://t.me/BOT'};"
-                  "const f=window.fetch;window.fetch=function(i,o){try{const t=new Headers((o&&o.headers)||"
-                  "(i instanceof Request?i.headers:void 0)).get('x-access-token');if(t)g(t)}catch(e){}"
-                  "return f.apply(this,arguments)};"
-                  "const s=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.setRequestHeader="
-                  "function(k,v){if(/^x-access-token$/i.test(k)&&v)g(v);return s.apply(this,arguments)};"
-                  "alert('OK. Teraz stuknij dowolna kategorie albo salon.')})()")
-
-
-def bookmarklet(bot_username: str) -> str:
-    return "javascript:" + urllib.parse.quote(BOOKMARKLET_JS.replace("t.me/BOT'", f"t.me/{bot_username}'"), safe="()[]{};,.:/'+=!*_~-|")
-
-LOGIN_HELP = """<b>Jak podłączyć Booksy do bota (z telefonu)</b>
-
-<b>CZĘŚĆ 1 – robisz tylko raz: zapisz zakładkę</b>
-
-<b>iPhone (Safari):</b>
-1. Stuknij szary kod na samym dole tej wiadomości. Skopiuje się.
-2. Otwórz Safari, wejdź na jakąkolwiek stronę (np. google.pl).
-3. Stuknij ikonę <b>Udostępnij</b> (kwadrat ze strzałką w górę) → <b>Dodaj zakładkę</b> → <b>Zachowaj</b>.
-4. Stuknij ikonę <b>📖 Zakładki</b> → na dole <b>Edytuj</b> → stuknij zakładkę, którą właśnie dodałeś.
-5. W pierwszym polu (nazwa) wpisz: <b>Booksy bot</b>
-6. W drugim polu (adres) skasuj wszystko, przytrzymaj palec → <b>Wklej</b>.
-7. Stuknij <b>Gotowe</b>.
-
-<b>Android (Chrome):</b>
-1. Stuknij szary kod na samym dole tej wiadomości. Skopiuje się.
-2. W Chrome na dowolnej stronie: <b>⋮</b> → <b>☆</b> → <b>Edytuj</b>.
-3. Nazwa: <b>Booksy bot</b>. Adres: skasuj wszystko i wklej kod. Zapisz.
-
-<b>CZĘŚĆ 2 – za każdym razem, gdy bot napisze, że token wygasł</b>
-1. W Safari/Chrome wejdź na <b>booksy.com</b> i zaloguj się (jak zawsze).
-2. NIE otwieraj nowej karty. Na tej samej stronie Booksy:
-   iPhone: <b>📖 Zakładki</b> → <b>Booksy bot</b>.
-   Android: stuknij pasek adresu, wpisz <b>Booksy bot</b>, stuknij zakładkę z gwiazdką.
-3. Wyskoczy okienko „OK…” → stuknij <b>OK</b>.
-4. Stuknij na stronie Booksy cokolwiek, np. kategorię <b>Barber</b>.
-5. Wyskoczy okienko z tekstem <code>/token …</code> → stuknij <b>OK</b>.
-6. Otworzy się Telegram. W czacie z botem przytrzymaj palec → <b>Wklej</b> → <b>Wyślij</b>.
-7. Bot odpisze „Token zapisany”. Gotowe.
-
-Coś nie działa? Napisz, w którym kroku utknąłeś.
-
-👇 KOD (stuknij, żeby skopiować):
-<code>{code}</code>"""
-
-FRIEND_HELP = """
-
-<b>Twoje konto Booksy</b>
-Bot korzysta z <b>Twojego</b> konta (regulamin Booksy: jedno konto na osobę). Raz na jakiś czas podłącz je:
-/login – instrukcja dla telefonu. Wiadomość z tokenem od razu usuwam. Token daje dostęp do Twojego konta Booksy –
-wysyłaj go tylko tu.
-Limit: 3 powiadomienia, 1 autorezerwacja. Do tego samego terminu pierwszeństwo ma właściciel bota."""
-
-OWNER_HELP = """
-
-<b>Znajomi</b>
-Znajomy pisze do bota /start i podaje hasło (BOT_PASSWORD na serwerze); 3 złe próby = blokada.
-Znajomy korzysta z własnego konta Booksy, ale z Twojego IP – ryzyko blokady dotyczy też Ciebie.
-/users – lista, /kick ID – usuń (z tokenem i powiadomieniami).
-Nowy token Booksy z telefonu: /login."""
-
-BOT_COMMANDS = [{"command": "list", "description": "Aktywne powiadomienia"},
-                {"command": "visits", "description": "Twoje wizyty (odwołanie)"},
-                {"command": "login", "description": "Podłącz konto Booksy z telefonu"},
-                {"command": "help", "description": "Jak korzystać z bota"}]
 
 TIME_CHOICES = [("Dowolna pora", 0, DAY_END), ("Rano (do 12)", 0, 12 * 60),
                 ("Popołudnie (12–17)", 12 * 60, 17 * 60), ("Wieczór (od 17)", 17 * 60, DAY_END)]
@@ -173,129 +76,18 @@ def fmt_slots(slots: list[str], limit: int = 10) -> str:
     return "\n".join(lines)
 
 
-def fmt_minutes(m: int) -> str:
-    return f"{m // 60}:{m % 60:02d}"
-
-
 def fold(text: str) -> str:
     """Case- and accent-insensitive form for searching ("Męskie" ~ "meskie")."""
     text = unicodedata.normalize("NFKD", text.casefold().replace("ł", "l"))
     return "".join(c for c in text if not unicodedata.combining(c))
 
 
-# ---------- user input ----------
-
-_DATE = re.compile(r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?")
-_TIME = re.compile(r"(\d{1,2})(?:[:.](\d{2}))?")
-
-
-def parse_dates(text: str, now: date) -> tuple[date, date]:
-    """'5.12' or '1.12-15.12' (optionally with year); a date without a year that already passed means next year."""
-    found = _DATE.findall(text)
-    if not 1 <= len(found) <= 2:
-        raise ValueError("podaj datę albo zakres, np. 5.12 albo 1.12-15.12")
-    try:
-        out = [date(int(y) + (2000 if len(y) == 2 else 0) if y else now.year, int(m), int(d)) for d, m, y in found]
-        if not any(y for _, _, y in found):                # no year typed: pick it for the range as a whole
-            if out[-1] < out[0]:
-                out[-1] = out[-1].replace(year=out[-1].year + 1)          # 20.12-5.1
-            if out[-1] < now:
-                out = [x.replace(year=x.year + 1) for x in out]           # 10.1 typed in November
-    except ValueError:
-        raise ValueError(f"nie ma takiej daty: {text.strip()}") from None
-    start, end = out[0], out[-1]
-    if end < start:
-        raise ValueError("data końcowa jest przed początkową")
-    if end < now:
-        raise ValueError("ten zakres dat już minął")
-    if (end - max(start, now)).days >= MAX_DAYS:
-        raise ValueError(f"zakres najwyżej {MAX_DAYS} dni")
-    return start, end
-
-
-def parse_times(text: str) -> tuple[int, int]:
-    """'16-20' or '16:30-19:00' -> minutes after midnight (slot start within the range, inclusive)."""
-    found = _TIME.findall(text)
-    if len(found) != 2:
-        raise ValueError("podaj zakres godzin, np. 16-20 albo 16:30-19:00")
-    (h1, m1), (h2, m2) = found
-    a, b = int(h1) * 60 + int(m1 or 0), int(h2) * 60 + int(m2 or 0)
-    if int(m1 or 0) > 59 or int(m2 or 0) > 59 or not 0 <= a < b <= DAY_END:
-        raise ValueError("godziny 0:00–24:00, początek przed końcem")
-    return a, b
-
-
-# ---------- search query ----------
-
-@dataclass(frozen=True)
-class Query:
-    """What to search: carried between wizard steps inside button commands, and stored for monitoring."""
-    business_id: int
-    variant_id: int
-    staffer_id: int = ANY_STAFFER
-    days: int = 14                       # rolling window from today, used when date_from is None
-    date_from: date | None = None
-    date_to: date | None = None
-    time_from: int = 0
-    time_to: int = DAY_END
-
-    @classmethod
-    def parse(cls, args: list[str]) -> "Query":
-        """<salon> <variant> [staffer] [days | YYYYMMDD-YYYYMMDD] [time_from time_to] (minutes)."""
-        q = {"business_id": business_id_arg(args[0]), "variant_id": int(args[1])}
-        if len(args) > 2:
-            q["staffer_id"] = int(args[2])
-        if len(args) > 3:
-            if "-" in args[3]:
-                a, b = args[3].split("-")
-                q["date_from"], q["date_to"] = (datetime.strptime(x, "%Y%m%d").date() for x in (a, b))
-            else:
-                q["days"] = int(args[3])
-        if len(args) > 5:
-            q["time_from"], q["time_to"] = int(args[4]), int(args[5])
-        out = cls(**q)
-        if not 1 <= out.days <= MAX_DAYS:
-            raise ValueError(f"liczba dni 1–{MAX_DAYS}")
-        if not 0 <= out.time_from < out.time_to <= DAY_END:
-            raise ValueError("zły zakres godzin")
-        return out
-
-    @classmethod
-    def of(cls, m: Monitor) -> "Query":
-        return cls(m.business_id, m.variant_id, m.staffer_id, m.days,
-                   date.fromisoformat(m.date_from) if m.date_from else None,
-                   date.fromisoformat(m.date_to) if m.date_to else None, m.time_from, m.time_to)
-
-    def dates_arg(self) -> str:
-        return f"{self.date_from:%Y%m%d}-{self.date_to:%Y%m%d}" if self.date_from else str(self.days)
-
-    def encode(self) -> str:
-        return f"{self.business_id} {self.variant_id} {self.staffer_id} {self.dates_arg()} {self.time_from} {self.time_to}"
-
-    def window(self, now: date) -> tuple[date, date]:
-        if self.date_from and self.date_to:
-            return max(self.date_from, now), self.date_to
-        return now, now + timedelta(days=self.days - 1)
-
-    def expired(self, now: date) -> bool:
-        return self.date_to is not None and self.date_to < now
-
-    def scope(self) -> str:
-        if self.date_from and self.date_to:
-            dates = f"{self.date_from:%d.%m}" + ("" if self.date_from == self.date_to else f"–{self.date_to:%d.%m}")
-        else:
-            dates = f"najbliższe {self.days} dni"
-        if (self.time_from, self.time_to) != (0, DAY_END):
-            dates += f", {fmt_minutes(self.time_from)}–{fmt_minutes(self.time_to)}"
-        return dates
-
-
-async def find_slots(client: BooksyClient, q: Query, now: date | None = None) -> list[str]:
+async def find_slots(client: BooksyClient, q: Query, now: date | None = None, retries: int | None = None) -> list[str]:
     """Free slot starts (ISO, Europe/Warsaw) inside the query's date window and time range."""
     start, end = q.window(now or today())
     if start > end:
         return []
-    r = await client.time_slots(q.business_id, q.variant_id, start, end, q.staffer_id)
+    r = await client.time_slots(q.business_id, q.variant_id, start, end, q.staffer_id, retries=retries)
     return sorted(dt.isoformat() for d in r.days if start <= d.day <= end for dt in d.starts()
                   if q.time_from <= dt.hour * 60 + dt.minute <= q.time_to)
 
@@ -336,6 +128,13 @@ async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now:
     return None
 
 
+def range_months(m: Monitor) -> set[str]:
+    """'YYYY-MM' of every month the monitor's date range (from today on) touches."""
+    start, end = Query.of(m).window(today())
+    return {f"{start.year + (start.month - 1 + i) // 12}-{(start.month - 1 + i) % 12 + 1:02d}"
+            for i in range((end.year - start.year) * 12 + end.month - start.month + 1)}
+
+
 async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: list[str]) -> Reply | None:
     """Book the earliest free slot in a month without a bot booking in this salon yet (1 visit a month).
     booking.book re-checks the slot, refuses payments and never books the same slot twice.
@@ -352,6 +151,9 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
         raise
     except ApiError as e:
         log.warning("monitor %s: visit list unavailable (%s), using the bot's own bookings only", m.id, e)  # do not miss the slot
+    if range_months(m) <= taken:
+        storage.deactivate(m.chat_id, m.id)
+        return f"✅ Każdy miesiąc z zakresu ma już wizytę w tym salonie – kończę {describe(m)}"
     slots = [s for s in slots if s[:7] not in taken]
     if not slots:
         return None
@@ -362,10 +164,7 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
         log.info("monitor %s: autobook %s skipped: %s", m.id, slots[0], e)
         return None
     if storage.booking_status(b.business_id, b.start.isoformat()) == ("confirmed", m.chat_id):
-        start, end = Query.of(m).window(today())
-        months = {f"{start.year + (start.month - 1 + i) // 12}-{(start.month - 1 + i) % 12 + 1:02d}"
-                  for i in range((end.year - start.year) * 12 + end.month - start.month + 1)}
-        if months <= storage.booked_months(m.business_id, m.chat_id) | taken:
+        if range_months(m) <= storage.booked_months(m.business_id, m.chat_id) | taken:
             storage.deactivate(m.chat_id, m.id)
             return f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}"
         return (f"🤖 {msg}\n{describe(m)}{salon_link(m.business_url)}\n"
@@ -397,7 +196,6 @@ class Bot:
         self.username = "Booksy_booking_bot"   # replaced by getMe at start; used in the /login bookmarklet
         # Joining = /start + BOT_PASSWORD (unset = nobody can join). chat_id -> tries left while asking for it.
         self.password = os.environ.get("BOT_PASSWORD", "")
-        self.joining: dict[int, int] = {}
         self._alerted: set[str] = set()    # one alert per problem until it is resolved
         self._prechecked: date | None = None   # day of the last pre-window token check
         # What typed text means right now, per chat: ("service", salon) / ("dates", args) / ("times", args).
@@ -447,30 +245,33 @@ class Bot:
         """Strangers: /start, then BOT_PASSWORD; 3 wrong -> blocked for good (no guessing). Anything else: silence."""
         if not self.password or self.storage.is_blocked(chat_id):
             return None  # private bot
+        tries = self.storage.join_tries(chat_id)
         if text.split()[:1] == ["/start"]:
-            self.joining.setdefault(chat_id, PASSWORD_TRIES)
+            if tries is None:
+                self.storage.set_join_tries(chat_id, PASSWORD_TRIES)
             return "🔒 Podaj hasło do bota (wiadomość od razu usunę)."
-        if chat_id not in self.joining:
+        if tries is None:
             return None
-        tries = self.joining.pop(chat_id)
         if hmac.compare_digest(text.encode(), self.password.encode()):
+            self.storage.set_join_tries(chat_id, None)
             return await self.welcome(chat_id, name)
         if tries > 1:
-            self.joining[chat_id] = tries - 1
+            self.storage.set_join_tries(chat_id, tries - 1)
             return f"❌ Złe hasło. Zostało prób: {tries - 1}."
+        self.storage.set_join_tries(chat_id, None)
         self.storage.block(chat_id)
         log.warning("chat %s blocked after wrong passwords", chat_id)
-        await self.tg.send(self.owner, f"⚠️ {PASSWORD_TRIES}× złe hasło od {html.escape(name) or chat_id} "
+        await self.send(self.owner, f"⚠️ {PASSWORD_TRIES}× złe hasło od {html.escape(name) or chat_id} "
                                        f"(<code>{chat_id}</code>) – zablokowany.")
         return "❌ Złe hasło. Dostęp zablokowany."
 
     async def welcome(self, chat_id: int, name: str) -> str:
         self.storage.add_user(chat_id, name)
         log.info("friend %s joined", chat_id)
-        await self.tg.send(self.owner, f"👋 Dołączył(a) {html.escape(name) or chat_id} (<code>{chat_id}</code>).")
+        await self.send(self.owner, f"👋 Dołączył(a) {html.escape(name) or chat_id} (<code>{chat_id}</code>).")
         return "👋 Witaj! Najpierw podłącz swoje konto Booksy: /login" + FRIEND_HELP
 
-    async def _dispatch(self, chat_id: int, text: str) -> Reply:
+    async def _dispatch(self, chat_id: int, text: str) -> Reply | None:
         if not text.startswith("/"):
             link = re.search(r"\S*booksy\.com\S*", text)   # pasted link or "share" text from the Booksy app
             if link:
@@ -497,8 +298,9 @@ class Bot:
                              for c, n, t in us if c != self.owner) or "Brak znajomych."
         if cmd == "/kick" and chat_id == self.owner and len(args) == 1 and args[0].isdigit() and int(args[0]) != self.owner:
             who = int(args[0])
-            self._friend_clients.pop(who, None)
-            self.joining.pop(who, None)
+            if gone := self._friend_clients.pop(who, None):
+                await gone.aclose()
+            self.storage.set_join_tries(who, None)
             removed = self.storage.remove_user(who)
             self.storage.block(who)          # the password is shared: without this they could just join again
             return "✅ Usunięto i zablokowano." if removed else "Nie ma takiego użytkownika (czat zablokowany)."
@@ -537,19 +339,19 @@ class Bot:
             lines = [f"• {fmt_slot(v.booked_from.isoformat())} – {html.escape(v.business.name)}" for v in vs]
             return ("Twoje wizyty w Booksy:\n" + "\n".join(lines),
                     [button(f"❌ Odwołaj {fmt_slot(v.booked_from.isoformat())}", f"/cancel {v.appointment_uid}") for v in vs])
-        if cmd == "/cancel" and len(args) == 1:
+        if cmd == "/cancel" and len(args) == 1 and args[0].isdigit():
             a = await booking.cancellable(self.api, args[0])
             return (f"Odwołać wizytę <b>{a.booked_from:%d.%m %H:%M}</b> – {html.escape(a.business.name)}"
                     + (f", {html.escape(a.total)}" if a.total else "") + "?",
                     [button("✅ Tak, odwołaj", f"/cancelok {args[0]}")])
-        if cmd == "/cancelok" and len(args) == 1:
+        if cmd == "/cancelok" and len(args) == 1 and args[0].isdigit():
             return await booking.cancel(self.api, self.storage, chat_id, args[0])
         if cmd == "/stop" and len(args) == 1 and args[0].lstrip("#").isdigit():
             ok = self.storage.deactivate(chat_id, int(args[0].lstrip("#")))
             return "✅ Zakończono." if ok else "Nie ma takiego aktywnego powiadomienia."
         return "Nie rozumiem tej komendy. Pomoc: /help"
 
-    async def typed(self, chat_id: int, text: str) -> Reply:
+    async def typed(self, chat_id: int, text: str) -> Reply | None:
         """Free text answering the last question; on a parse error the question stays open (just type again)."""
         kind, ctx = self._waiting[chat_id]
         if kind == "service":
@@ -686,10 +488,17 @@ class Bot:
 
     # ---------- loops ----------
 
+    async def send(self, chat_id: int, text: str, buttons: Buttons | None = None) -> None:
+        """Send, but a failed message (bot blocked by that person, Telegram down) only gets logged: loops go on."""
+        try:
+            await self.tg.send(chat_id, text, buttons)
+        except TelegramError as e:
+            log.warning("telegram send to %s: %s", chat_id, e)
+
     async def alert(self, key: str, chat_id: int, text: str) -> None:
         if key not in self._alerted:
             self._alerted.add(key)
-            await self.tg.send(chat_id, text)
+            await self.send(chat_id, text)
 
     async def token_expired(self, chat_id: int, prefix: str) -> None:
         """One alert per expiry; logs how long the token lived (Booksy does not say)."""
@@ -731,12 +540,12 @@ class Bot:
                 continue
             if Query.of(m).expired(today()):
                 self.storage.deactivate(m.chat_id, m.id)
-                await self.tg.send(m.chat_id, f"⌛ Zakres dat minął – kończę {describe(m)}")
+                await self.send(m.chat_id, f"⌛ Zakres dat minął – kończę {describe(m)}")
                 continue
             client, q = self.client_for(m.chat_id), Query.of(m)
             try:
                 if fast and q not in fetched:
-                    fetched[q] = await find_slots(client, q)
+                    fetched[q] = await find_slots(client, q, retries=0)
                 msg = await check_monitor(client, self.storage, m, slots=fetched.get(q))
             except SessionExpired:
                 expired.add(m.chat_id)                        # one person's token: the others go on
@@ -749,11 +558,14 @@ class Bot:
             except ApiError as e:
                 log.warning("monitor %s: %s", m.id, e)  # outage / limit: try next cycle
                 continue
+            except Exception:                           # e.g. a slot at a nonexistent DST time: skip this monitor only
+                log.exception("monitor %s", m.id)
+                continue
             self._alerted.discard(f"token:{m.chat_id}")
             self._alerted.discard(f"changed:{m.id}")
             if msg:
                 text, buttons = msg if isinstance(msg, tuple) else (msg, None)
-                await self.tg.send(m.chat_id, text, buttons)
+                await self.send(m.chat_id, text, buttons)
             if not fast:
                 await asyncio.sleep(random.uniform(2, 5))  # spread requests
 
@@ -766,8 +578,8 @@ class Bot:
                     self._prechecked = now.date()
                     await self.pre_window_check()
                 await self.check_all(fast)
-            except TelegramError as e:
-                log.warning("telegram: %s", e)
+            except Exception:                           # the loop must outlive any bug: it is what books on the 1st
+                log.exception("monitor loop")
             await asyncio.sleep(next_delay(datetime.now(SERVICE_TZ), min_s, max_s, window))
 
     async def updates_loop(self) -> None:
@@ -780,90 +592,37 @@ class Bot:
                 await asyncio.sleep(5)
                 continue
             for u in updates:
-                offset = u["update_id"] + 1
-                if cb := u.get("callback_query"):          # inline button pressed
-                    msg, text = cb.get("message") or {}, cb.get("data")
-                    try:
-                        await self.tg.call("answerCallbackQuery", callback_query_id=cb["id"])  # stop the spinner
-                    except TelegramError as e:
-                        log.warning("telegram: %s", e)
-                else:
-                    msg = u.get("message") or {}
-                    text = msg.get("text")
-                chat_id = (msg.get("chat") or {}).get("id")
-                if not text or chat_id is None:
-                    continue
-                chat = msg.get("chat") or {}
-                secret = text.startswith("/token") or chat_id in self.joining     # Booksy token or bot password
-                reply = await self.handle(chat_id, text, chat.get("first_name") or chat.get("username") or "")
-                if secret and msg.get("message_id") and not cb:
-                    try:   # do not leave secrets in the chat history
-                        await self.tg.call("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
-                    except TelegramError as e:
-                        log.warning("telegram: %s", e)
-                if reply:
-                    text, buttons = reply if isinstance(reply, tuple) else (reply, None)
-                    try:
-                        await self.tg.send(chat_id, text, buttons)
-                    except TelegramError as e:
-                        log.warning("telegram: %s", e)
+                offset = u["update_id"] + 1             # advanced first: a message that crashes us is not retried forever
+                try:
+                    await self.on_update(u)
+                except Exception:
+                    log.exception("update %s", u.get("update_id"))
 
-
-def interval() -> tuple[float, float]:
-    lo, _, hi = os.environ.get("CHECK_MINUTES", "5-10").partition("-")
-    lo_m = float(lo)
-    hi_m = float(hi or lo)
-    if lo_m < 2:
-        raise SystemExit("CHECK_MINUTES: minimum 2 minutes – more often risks a ban")
-    return lo_m * 60, hi_m * 60
-
-
-@dataclass(frozen=True)
-class FastWindow:
-    """When a salon opens bookings (e.g. days 1-3 of the month, 19:55-20:35): check autobook monitors every few seconds."""
-    first_day: int
-    last_day: int
-    start: time
-    end: time
-    seconds: float
-
-    @classmethod
-    def parse(cls, text: str) -> "FastWindow":
-        """'1-3 19:55-20:35 10' = days of month, local time range, seconds between checks."""
-        try:
-            days, hours, secs = text.split()
-            d1, _, d2 = days.partition("-")
-            h1, h2 = hours.split("-")
-            w = cls(int(d1), int(d2 or d1), time.fromisoformat(h1.zfill(5)), time.fromisoformat(h2.zfill(5)), float(secs))
-        except ValueError:
-            raise SystemExit(f"FAST_WINDOW: expected e.g. '1-3 19:55-20:35 10', got {text!r}") from None
-        if w.seconds < 5:
-            raise SystemExit("FAST_WINDOW: minimum 5 seconds – more often risks a ban")
-        if not (1 <= w.first_day <= w.last_day <= 31 and w.start < w.end):
-            raise SystemExit(f"FAST_WINDOW: bad days or hours in {text!r}")
-        return w
-
-    def active(self, now: datetime) -> bool:
-        return self.first_day <= now.day <= self.last_day and self.start <= now.time() < self.end
-
-    def seconds_to_start(self, now: datetime) -> float | None:
-        """Seconds until today's window opens; None if it is not a window day or it already started."""
-        if not self.first_day <= now.day <= self.last_day or now.time() >= self.start:
-            return None
-        return (datetime.combine(now.date(), self.start, tzinfo=now.tzinfo) - now).total_seconds()
-
-    def precheck_due(self, now: datetime) -> bool:
-        """The last hour before today's window: time to check tokens."""
-        to_start = self.seconds_to_start(now)
-        return to_start is not None and to_start <= 3600
-
-
-def next_delay(now: datetime, min_s: float, max_s: float, window: FastWindow | None) -> float:
-    if window and window.active(now):
-        return window.seconds * random.uniform(0.7, 1.3)        # jitter: not a fixed machine rhythm
-    delay = random.uniform(min_s, max_s)
-    to_start = window and window.seconds_to_start(now)
-    return min(delay, to_start) if to_start is not None else delay   # wake up exactly when the window opens
+    async def on_update(self, u: dict) -> None:
+        """One Telegram update: a message or a button press."""
+        if cb := u.get("callback_query"):          # inline button pressed
+            msg, text = cb.get("message") or {}, cb.get("data")
+            try:
+                await self.tg.call("answerCallbackQuery", callback_query_id=cb["id"])  # stop the spinner
+            except TelegramError as e:
+                log.warning("telegram: %s", e)
+        else:
+            msg = u.get("message") or {}
+            text = msg.get("text")
+        chat_id = (msg.get("chat") or {}).get("id")
+        if not text or chat_id is None:
+            return
+        chat = msg.get("chat") or {}
+        secret = text.startswith("/token") or self.storage.join_tries(chat_id) is not None   # Booksy token or bot password
+        reply = await self.handle(chat_id, text, chat.get("first_name") or chat.get("username") or "")
+        if secret and msg.get("message_id") and not cb:
+            try:   # do not leave secrets in the chat history
+                await self.tg.call("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
+            except TelegramError as e:
+                log.warning("telegram: %s", e)
+        if reply:
+            text, buttons = reply if isinstance(reply, tuple) else (reply, None)
+            await self.send(chat_id, text, buttons)
 
 
 async def run() -> None:
@@ -877,7 +636,6 @@ async def run() -> None:
     client, http = make_client(token_provider=lambda: (owner_id and (storage.user(owner_id) or ("", None))[1]) or fresh_token())
     tg = Telegram(os.environ["TELEGRAM_BOT_TOKEN"])
     def friend_client(chat_id: int) -> BooksyClient:
-        # shortcut: friends' HTTP clients are never closed; fine for a few long-lived friends.
         fingerprint = (storage.user(chat_id) or ("", None, None))[2]
         return make_client(token_provider=lambda: (storage.user(chat_id) or ("", None))[1], fingerprint=fingerprint)[0]
 
@@ -899,6 +657,8 @@ async def run() -> None:
         await asyncio.gather(bot.updates_loop(), bot.monitor_loop(lo, hi, window))
     finally:
         await http.aclose()
+        for c in bot._friend_clients.values():
+            await c.aclose()
         await tg.aclose()
 
 
