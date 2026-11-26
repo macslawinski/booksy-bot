@@ -362,6 +362,7 @@ class Bot:
         # What typed text means right now, per chat: ("service", salon) / ("dates", args) / ("times", args).
         # shortcut: in memory, lost on restart (user just sends the link again); persist if that becomes annoying.
         self._waiting: dict[int, tuple[str, str]] = {}
+        self._listed: dict[int, list[str]] = {}            # chat -> /pick commands of the last numbered service list
 
     @property
     def api(self) -> BooksyClient:
@@ -497,6 +498,13 @@ class Bot:
         """Free text answering the last question; on a parse error the question stays open (just type again)."""
         kind, ctx = self._waiting[chat_id]
         if kind == "service":
+            picks = self._listed.get(chat_id, [])
+            if text.strip().isdigit():                     # typed number = same as tapping that button
+                n = int(text)
+                if 1 <= n <= len(picks):
+                    del self._waiting[chat_id]
+                    return await self.handle(chat_id, picks[n - 1])
+                return f"Nie ma usługi nr {n} – wybierz 1–{len(picks)}."
             return await self.cmd_services(chat_id, ctx, phrase=text)
         if kind == "dates":
             start, end = parse_dates(text, today())
@@ -532,8 +540,9 @@ class Bot:
             lines.append(f"Pokazuję {LIST_LIMIT} z {len(found)}.")
         if any(v.needs_payment for _, _, v in found):
             lines.append("⚠ = przedpłata/kaucja")
-        lines.append("🔎 Albo wpisz część nazwy usługi.")
+        lines.append("Stuknij albo wpisz numer, albo wpisz część nazwy usługi 🔎")
         picks = [(str(n), f"/pick {b.id} {v.id}") for n, (_, _, v) in enumerate(found[:LIST_LIMIT], 1)]
+        self._listed[chat_id] = [cmd for _, cmd in picks]
         return "\n".join(lines), grid(picks)
 
     async def cmd_pick(self, chat_id: int, args: list[str]) -> Reply:
