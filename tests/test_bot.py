@@ -420,3 +420,37 @@ def test_secret_is_deleted_even_if_handling_it_fails():
     with pytest.raises(RuntimeError):
         asyncio.run(bot.on_update({"update_id": 1, "message": {"message_id": 9, "chat": {"id": OWNER}, "text": "/token " + "x" * 30}}))
     assert calls == ["deleteMessage"]
+
+
+def test_status_shows_token_window_and_autobook():
+    from booksy_bot.bot import FastWindow
+    bot, storage = new_bot()
+    def handler(req):
+        if req.url.path.endswith("/me/bookings"):
+            return httpx.Response(200, json={"bookings": []})
+        return httpx.Response(404)
+    bot.client = make_client(handler)
+    bot.window = FastWindow.parse("1-3 19:55-20:35 10")
+    add(storage, autobook=True)
+    text = run(bot, "/status")
+    assert "Token Booksy: ✅ działa" in text and "Okno zapisów: dni 1–3, 19:55–20:35, co 10 s" in text
+    assert "autorezerwacje: 1" in text and "jeszcze nie było" in text
+    bot.client = make_client(lambda req: httpx.Response(401))
+    assert "❌ wygasł" in run(bot, "/status")
+
+
+def test_rehearse_only_for_the_owner_and_ends_with_a_summary(monkeypatch):
+    bot, storage = new_bot()
+    assert "Najpierw ustaw powiadomienie" in run(bot, "/rehearse")
+    add(storage)
+    assert "nic nie rezerwuję" in run(bot, "/rehearse 5") and bot.rehearsal_until is not None
+    assert run(bot, "/rehearse", 555) is None                     # strangers: silence as always
+    from test_booking import NOW as BOOKING_NOW, booksy as booking_api   # serves dry_run too
+    monkeypatch.setattr(botmod.booking, "now", lambda: BOOKING_NOW)
+    bot.client, calls = booking_api(slots=SLOTS)
+    asyncio.run(bot.check_all(fast=True, dry=True))
+    assert "/me/appointments/business/100001/" not in [p for p, _ in calls]   # never the real booking
+    assert "🧪 Próba: zarezerwowałbym" in bot.tg.sent[-1][1]
+    assert "Kończę próbę" in run(bot, "/rehearse stop")
+    asyncio.run(bot.end_rehearsal())
+    assert "Próba zakończona" in bot.tg.sent[-1][1] and bot.rehearsal_until is None

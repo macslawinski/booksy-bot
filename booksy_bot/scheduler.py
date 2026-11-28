@@ -2,7 +2,7 @@
 import os
 import random
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 
 def interval() -> tuple[float, float]:
@@ -47,6 +47,14 @@ class FastWindow:
         if not self.first_day <= now.day <= self.last_day or now.time() >= self.start:
             return None
         return (datetime.combine(now.date(), self.start, tzinfo=now.tzinfo) - now).total_seconds()
+
+    def next_start(self, now: datetime) -> datetime | None:
+        """Start of the window running now or of the next one; None if no day in the next ~2 months fits."""
+        for d in range(62):
+            day = now.date() + timedelta(days=d)
+            if self.first_day <= day.day <= self.last_day and datetime.combine(day, self.end, tzinfo=now.tzinfo) > now:
+                return datetime.combine(day, self.start, tzinfo=now.tzinfo)
+        return None
 
     def precheck_due(self, now: datetime) -> bool:
         """The last hour before today's window: time to check tokens."""
