@@ -208,3 +208,34 @@ def test_fast_window_fetches_slots_once_per_query(setup):
     log.clear()
     asyncio.run(bot.check_all(fast=True))
     assert [who for who, path, _ in log if path.endswith("/time_slots")] == ["owner"]
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_fast_window_failed_fetch_is_not_repeated_by_the_next_person(setup, status):
+    bot, storage, tg, log = setup
+    join(bot)
+    run(bot, f"/token {TOKEN}", FRIEND)
+    calls = []
+    def failing(req):
+        calls.append(req.url.path)
+        return httpx.Response(status)
+    from conftest import make_client as mc
+    bot.client = mc(failing)
+    bot._friend_clients[FRIEND] = mc(failing)
+    kw = dict(date_from="2026-11-27", date_to="2026-11-28", autobook=True)
+    storage.add_monitor(OWNER, 100001, "S", "u", 300001, "X", -1, 4, **kw)
+    storage.add_monitor(FRIEND, 100001, "S", "u", 300001, "X", -1, 4, **kw)
+    asyncio.run(bot.check_all(fast=True))
+    assert len(calls) == 1                                       # one request per 10 s cycle, not one per person
+
+
+def test_kicked_friend_gets_nothing_from_the_running_cycle(setup, monkeypatch):
+    bot, storage, tg, log = setup
+    join(bot)
+    storage.add_monitor(FRIEND, 100001, "S", "u", 300001, "X", -1, 4)
+    storage.db.execute("delete from user where chat_id = ?", (FRIEND,))   # kicked after the monitor list was read
+    storage.db.commit()
+    tg.sent.clear()
+    log.clear()
+    asyncio.run(bot.check_all())
+    assert [c for c, _ in tg.sent if c == FRIEND] == [] and log == []

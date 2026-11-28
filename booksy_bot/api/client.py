@@ -14,6 +14,7 @@ class BooksyClient:
     def __init__(self, http: HttpCore):
         self._http = http
         self._bookings: tuple[float, BookingsResponse] | None = None   # (monotonic time, list) for my_bookings(max_age)
+        self._writes = 0                    # book/cancel count: a list fetched across a write is not cached
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -45,7 +46,7 @@ class BooksyClient:
 
     async def book(self, business_id: int, service_variant_id: int, staffer_id: int, start: datetime) -> AppointmentResponse:
         """REAL booking. Never resent after a possibly-delivered request (idempotent=False): could book twice."""
-        self._bookings = None                                       # my visits are about to change
+        self._bookings, self._writes = None, self._writes + 1      # my visits are about to change
         return await self._http.request("POST", f"/me/appointments/business/{business_id}/", AppointmentResponse,
                                         json_body=self._booking_body(service_variant_id, staffer_id, start), idempotent=False)
 
@@ -55,7 +56,7 @@ class BooksyClient:
 
     async def cancel(self, appointment_uid: int | str, version: int) -> Ack:
         """REAL cancel (found in booksy.com's JS 2026-11-26). Not resent after an unknown outcome; check with appointment()."""
-        self._bookings = None
+        self._bookings, self._writes = None, self._writes + 1
         return await self._http.request("POST", f"/me/appointments/{appointment_uid}/action/", Ack,
                                         json_body={"action": "cancel", "_version": version, "no_thumbs": "true"},
                                         idempotent=False)
@@ -65,7 +66,9 @@ class BooksyClient:
         max_age > 0: reuse a list fetched that many seconds ago or less (autobook runs every 10 s in the window)."""
         if max_age and self._bookings and time.monotonic() - self._bookings[0] < max_age:
             return self._bookings[1]
+        writes = self._writes
         r = await self._http.request("GET", "/me/bookings", BookingsResponse,
                                      params={"bookings_page": 1, "bookings_per_page": 100, "state": "active"})
-        self._bookings = (time.monotonic(), r)
+        if writes == self._writes:          # a booking/cancel sent meanwhile may not be in this list
+            self._bookings = (time.monotonic(), r)
         return r

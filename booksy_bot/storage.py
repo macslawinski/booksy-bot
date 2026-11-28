@@ -51,7 +51,8 @@ create table if not exists join_attempt(      -- strangers asked for the bot pas
     tries_left integer not null
 );
 """
-# Added after the first release; added to older DBs by Storage._migrate.
+# Columns added before migrations were numbered; only `_before_versioning` reads this (FROZEN).
+# A new column = a new step appended to MIGRATIONS, never an entry here: databases at user_version >= 1 skip this list.
 NEW_COLUMNS = {
     "date_from": "text",                                  # fixed window (ISO dates), null = rolling `days`
     "date_to": "text",
