@@ -376,3 +376,29 @@ def test_visit_list_is_reused_for_5_minutes_but_refreshed_after_booking():
     assert len(fetched) == 2
     asyncio.run(bookingmod.visit_months(client, 100001))         # ...and that fresh list is reused
     assert len(fetched) == 2
+
+
+def test_monitor_is_not_ended_on_a_stale_visit_list(auto_bot):
+    from test_bot import SLOTS, add
+    from booksy_bot.bot import check_monitor
+    _, storage = auto_bot
+    m = add(storage, autobook=True, date_from="2026-11-27", date_to="2026-11-28")
+    visits = [visit("2026-11-30T09:00")]
+    client, calls = booksy(slots=SLOTS, visits=visits)
+    asyncio.run(bookingmod.visit_months(client, 100001))          # list cached with the November visit
+    visits.clear()                                                # ...then cancelled by hand in the app
+    msg = asyncio.run(check_monitor(client, storage, m, NOW.date()))
+    assert "Zarezerwowano 27.11 14:00" in msg                      # fresh list: November is free again
+
+
+def test_visit_list_fetched_across_a_booking_is_not_cached():
+    client, _ = booksy()
+    real = client._http.request
+    async def booking_meanwhile(method, path, *a, **kw):
+        r = await real(method, path, *a, **kw)
+        if path == "/me/bookings":
+            client._writes += 1                                   # a booking was sent while this list was on its way
+        return r
+    client._http.request = booking_meanwhile
+    asyncio.run(client.my_bookings())
+    assert client._bookings is None

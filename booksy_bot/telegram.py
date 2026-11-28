@@ -41,7 +41,7 @@ class Telegram:
         except TelegramError as e:
             if "parse entities" not in str(e):
                 raise
-            plain = html.unescape(re.sub(r"<[^>]+>", "", text))       # e.g. a stray "<" in a salon name
+            plain = html.unescape(re.sub(r"</?(?:b|i|u|s|code|pre|a)(?:\s[^>]*)?>", "", text))   # keeps a stray "<3"
             await self.call("sendMessage", chat_id=chat_id, text=plain, disable_web_page_preview=True, **extra)
 
     async def updates(self, offset: int | None) -> list[dict]:

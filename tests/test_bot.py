@@ -388,3 +388,35 @@ def test_telegram_cuts_long_messages_at_a_line_and_falls_back_to_plain_text():
     tg = Telegram("123:abc", transport=httpx.MockTransport(handler))
     asyncio.run(tg.send(1, "Salon <b>A &amp; B</b> <3"))
     assert sent[-1]["text"] == "Salon A & B <3" and "parse_mode" not in sent[-1]
+
+
+def test_cancel_accepts_text_visit_ids_but_not_paths():
+    bot, _ = new_bot()
+    assert "Nie rozumiem" not in run(bot, "/cancel a1b2-C3")   # reaches Booksy (here: 404 from the fake)
+    assert "Nie rozumiem" in run(bot, "/cancel a/b")
+
+
+def test_plain_text_fallback_keeps_a_stray_less_than():
+    sent = []
+    def handler(req):
+        body = json.loads(req.content)
+        sent.append(body)
+        if body.get("parse_mode"):
+            return httpx.Response(200, json={"ok": False, "description": "Bad Request: can't parse entities"})
+        return httpx.Response(200, json={"ok": True, "result": {}})
+    asyncio.run(Telegram("1:a", transport=httpx.MockTransport(handler)).send(1, "Salon <3 cuts – <b>Strzyżenie</b>"))
+    assert sent[-1]["text"] == "Salon <3 cuts – Strzyżenie"
+
+
+def test_secret_is_deleted_even_if_handling_it_fails():
+    bot, _ = new_bot()
+    calls = []
+    async def call(method, **kw):
+        calls.append(method)
+    bot.tg.call = call
+    async def broken(*a, **kw):
+        raise RuntimeError("bug")
+    bot.handle = broken
+    with pytest.raises(RuntimeError):
+        asyncio.run(bot.on_update({"update_id": 1, "message": {"message_id": 9, "chat": {"id": OWNER}, "text": "/token " + "x" * 30}}))
+    assert calls == ["deleteMessage"]

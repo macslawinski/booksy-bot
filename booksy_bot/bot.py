@@ -18,7 +18,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timezone
 
 from booksy_bot.api.client import ANY_STAFFER, BooksyClient
-from booksy_bot.api.http import ApiChanged, ApiError, SessionExpired
+from booksy_bot.api.http import ApiChanged, ApiError, RateLimited, SessionExpired
 from booksy_bot.api.models import Business, Service, Variant
 from booksy_bot import booking
 from booksy_bot.booking import BookArgs
@@ -31,6 +31,7 @@ from booksy_bot.scheduler import FastWindow, interval, next_delay
 from booksy_bot.texts import BOT_COMMANDS, FRIEND_HELP, HELP, LOGIN_HELP, OWNER_HELP, bookmarklet
 
 log = logging.getLogger("bot")
+_UID = re.compile(r"[A-Za-z0-9_-]{1,40}")   # a visit id goes into the URL path: no "/", "." or "?"
 MAX_MONITORS = 10          # per chat; keeps polling volume modest (luxmed-bot used the same limit)
 MAX_AUTOBOOK = 3           # unattended bookings at once; Booksy terms: no mass booking
 FRIEND_MAX_MONITORS = 3    # friends share the owner's IP: keep their traffic small
@@ -147,6 +148,8 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
         return None
     try:
         taken |= await booking.visit_months(client, m.business_id)    # visits booked by hand in the app
+        if range_months(m) <= taken:   # about to end the monitor: decide on a fresh list, not one up to 5 min old
+            taken = storage.booked_months(m.business_id, m.chat_id) | await booking.visit_months(client, m.business_id, max_age=0)
     except SessionExpired:
         raise
     except ApiError as e:
@@ -339,12 +342,12 @@ class Bot:
             lines = [f"• {fmt_slot(v.booked_from.isoformat())} – {html.escape(v.business.name)}" for v in vs]
             return ("Twoje wizyty w Booksy:\n" + "\n".join(lines),
                     [button(f"❌ Odwołaj {fmt_slot(v.booked_from.isoformat())}", f"/cancel {v.appointment_uid}") for v in vs])
-        if cmd == "/cancel" and len(args) == 1 and args[0].isdigit():
+        if cmd == "/cancel" and len(args) == 1 and _UID.fullmatch(args[0]):
             a = await booking.cancellable(self.api, args[0])
             return (f"Odwołać wizytę <b>{a.booked_from:%d.%m %H:%M}</b> – {html.escape(a.business.name)}"
                     + (f", {html.escape(a.total)}" if a.total else "") + "?",
                     [button("✅ Tak, odwołaj", f"/cancelok {args[0]}")])
-        if cmd == "/cancelok" and len(args) == 1 and args[0].isdigit():
+        if cmd == "/cancelok" and len(args) == 1 and _UID.fullmatch(args[0]):
             return await booking.cancel(self.api, self.storage, chat_id, args[0])
         if cmd == "/stop" and len(args) == 1 and args[0].lstrip("#").isdigit():
             ok = self.storage.deactivate(chat_id, int(args[0].lstrip("#")))
@@ -533,10 +536,14 @@ class Bot:
         expired: set[int] = set()
         # fast: one time_slots per query per cycle, through whichever account asks first (fewer requests from our IP).
         # Not outside the window, so each person's token is still checked there before the window opens.
-        fetched: dict[Query, list[str]] = {}
+        fetched: dict[Query, list[str] | None] = {}     # None = failed this cycle: nobody asks again until the next one
         # the owner first: in the same cycle their monitors book before friends' (priority on the same barber)
         for m in sorted(self.storage.active_monitors(), key=lambda m: m.chat_id != self.owner):
             if (fast and not m.autobook) or m.chat_id in expired:
+                continue
+            if m.chat_id != self.owner and not self.is_friend(m.chat_id):
+                continue                                  # kicked during this cycle: no client, no messages
+            if fast and Query.of(m) in fetched and fetched[Query.of(m)] is None:
                 continue
             if Query.of(m).expired(today()):
                 self.storage.deactivate(m.chat_id, m.id)
@@ -551,12 +558,17 @@ class Bot:
                 expired.add(m.chat_id)                        # one person's token: the others go on
                 await self.token_expired(m.chat_id, "Powiadomienia wstrzymane. ")
                 continue
+            except RateLimited as e:
+                log.warning("monitor %s: %s – rest of this cycle skipped", m.id, e)   # do not keep knocking on a 429
+                return
             except ApiChanged as e:
                 log.error("monitor %s: %s", m.id, e)
                 await self.alert(f"changed:{m.id}", m.chat_id, f"⚠️ Booksy zmienił format odpowiedzi – powiadomienie #{m.id} może nie działać. Szczegóły w logu.")
                 continue
             except ApiError as e:
                 log.warning("monitor %s: %s", m.id, e)  # outage / limit: try next cycle
+                if fast:
+                    fetched.setdefault(q, None)             # the slot fetch failed: same query, same answer this cycle
                 continue
             except Exception:                           # e.g. a slot at a nonexistent DST time: skip this monitor only
                 log.exception("monitor %s", m.id)
@@ -614,12 +626,12 @@ class Bot:
             return
         chat = msg.get("chat") or {}
         secret = text.startswith("/token") or self.storage.join_tries(chat_id) is not None   # Booksy token or bot password
-        reply = await self.handle(chat_id, text, chat.get("first_name") or chat.get("username") or "")
         if secret and msg.get("message_id") and not cb:
-            try:   # do not leave secrets in the chat history
+            try:   # first: the secret must not stay in the chat even if handling it fails
                 await self.tg.call("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
             except TelegramError as e:
                 log.warning("telegram: %s", e)
+        reply = await self.handle(chat_id, text, chat.get("first_name") or chat.get("username") or "")
         if reply:
             text, buttons = reply if isinstance(reply, tuple) else (reply, None)
             await self.send(chat_id, text, buttons)
