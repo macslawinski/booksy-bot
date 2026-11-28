@@ -11,11 +11,12 @@ import html
 import logging
 import os
 import random
+import time
 import re
 import unicodedata
 from argparse import ArgumentTypeError
 from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from booksy_bot.api.client import ANY_STAFFER, BooksyClient
 from booksy_bot.api.http import ApiChanged, ApiError, RateLimited, SessionExpired
@@ -37,6 +38,7 @@ MAX_AUTOBOOK = 3           # unattended bookings at once; Booksy terms: no mass 
 FRIEND_MAX_MONITORS = 3    # friends share the owner's IP: keep their traffic small
 FRIEND_MAX_AUTOBOOK = 1
 PASSWORD_TRIES = 3          # wrong bot passwords before the chat is blocked for good
+AUTOBOOK_TRIES = 3         # slots tried in one cycle when the earlier ones were just taken (the opening rush)
 LIST_LIMIT = 30            # service buttons per message; more -> type part of the name
 
 TIME_CHOICES = [("Dowolna pora", 0, DAY_END), ("Rano (do 12)", 0, 12 * 60),
@@ -108,7 +110,7 @@ def salon_link(url: str) -> str:
 
 
 async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now: date | None = None,
-                        slots: list[str] | None = None) -> Reply | None:
+                        slots: list[str] | None = None, dry: dict[int, str] | None = None) -> Reply | None:
     """Fetch slots (unless given), remember them, and return a message only when something new appeared (or on the first check)."""
     current = set(slots if slots is not None else await find_slots(client, Query.of(m), now))
     new, first = storage.update_slots(m.id, current)
@@ -117,8 +119,10 @@ async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now:
         for month in sorted({s[:7] for s in new} - before):
             # shortcut: a sold-out month that gets one cancellation also looks "opened"; the slot count tells them apart
             log.info("monitor %s: month %s opened, %d new slots", m.id, month, sum(s.startswith(month) for s in new))
-    if m.autobook and current:
-        return await autobook(client, storage, m, sorted(current))
+    if (m.autobook or dry is not None) and current:
+        return await autobook(client, storage, m, sorted(current), dry)
+    if dry is not None:
+        return None                                       # rehearsal: no ordinary notifications
     if first and m.autobook:
         return f"🤖 Zarezerwuję automatycznie pierwszy wolny termin: {describe(m)}"
     if first:
@@ -129,6 +133,24 @@ async def check_monitor(client: BooksyClient, storage: Storage, m: Monitor, now:
     return None
 
 
+async def rehearse(client: BooksyClient, m: Monitor, slots: list[str], reported: dict[int, str]) -> Reply | None:
+    """Rehearsal of the booking window: what autobook would book, checked with dry_run only. One message per new pick."""
+    if reported.get(m.id) == slots[0]:
+        return None                        # same pick as last cycle: no repeated dry_run every 10 s
+    for s in slots[:AUTOBOOK_TRIES]:
+        try:
+            r = await booking.check(client, BookArgs.of(m.business_id, m.variant_id, m.staffer_id, s))
+        except ValueError as e:
+            log.info("monitor %s: rehearsal %s skipped: %s", m.id, s, e)
+            continue
+        log.info("monitor %s: rehearsal would book %s", m.id, s)
+        reported[m.id] = slots[0]
+        price = f", {html.escape(r.appointment.total)}" if r.appointment.total else ""
+        refuse = " – ale wymaga przedpłaty, więc bym odmówił" if r.needs_payment else ""
+        return f"🧪 Próba: zarezerwowałbym {fmt_slot(s)}{price}{refuse} – {describe(m)}\nNic nie zostało zarezerwowane."
+    return None
+
+
 def range_months(m: Monitor) -> set[str]:
     """'YYYY-MM' of every month the monitor's date range (from today on) touches."""
     start, end = Query.of(m).window(today())
@@ -136,11 +158,13 @@ def range_months(m: Monitor) -> set[str]:
             for i in range((end.year - start.year) * 12 + end.month - start.month + 1)}
 
 
-async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: list[str]) -> Reply | None:
+async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: list[str],
+                   dry: dict[int, str] | None = None) -> Reply | None:
     """Book the earliest free slot in a month without a bot booking in this salon yet (1 visit a month).
     booking.book re-checks the slot, refuses payments and never books the same slot twice.
-    Booked -> ends once every month of the date range has a visit. Slot gone meanwhile -> try again
-    next check. Anything else -> back to notifications only."""
+    Booked -> ends once every month of the date range has a visit. Slot gone meanwhile -> the next one
+    (up to AUTOBOOK_TRIES), then the next check. Anything else -> back to notifications only.
+    dry (rehearsal): monitor id -> slot already reported; nothing is booked or switched off."""
     taken = storage.booked_months(m.business_id, m.chat_id)
     slots = [s for s in slots if s[:7] not in taken
              and (storage.booking_status(m.business_id, s) or ('failed',))[0] in ('failed', 'cancelled')]   # not someone else's
@@ -155,16 +179,23 @@ async def autobook(client: BooksyClient, storage: Storage, m: Monitor, slots: li
     except ApiError as e:
         log.warning("monitor %s: visit list unavailable (%s), using the bot's own bookings only", m.id, e)  # do not miss the slot
     if range_months(m) <= taken:
+        if dry is not None:
+            return None
         storage.deactivate(m.chat_id, m.id)
         return f"✅ Każdy miesiąc z zakresu ma już wizytę w tym salonie – kończę {describe(m)}"
     slots = [s for s in slots if s[:7] not in taken]
     if not slots:
         return None
-    b = BookArgs.of(m.business_id, m.variant_id, m.staffer_id, slots[0])
-    try:
-        msg = await booking.book(client, storage, b, m.chat_id)
-    except ValueError as e:
-        log.info("monitor %s: autobook %s skipped: %s", m.id, slots[0], e)
+    if dry is not None:
+        return await rehearse(client, m, slots, dry)
+    for s in slots[:AUTOBOOK_TRIES]:       # each try: fresh dry_run + one booking attempt recorded per slot
+        b = BookArgs.of(m.business_id, m.variant_id, m.staffer_id, s)
+        try:
+            msg = await booking.book(client, storage, b, m.chat_id)
+            break
+        except ValueError as e:            # gone in the meantime: someone was faster, try the next one now
+            log.info("monitor %s: autobook %s skipped: %s", m.id, s, e)
+    else:
         return None
     if storage.booking_status(b.business_id, b.start.isoformat()) == ("confirmed", m.chat_id):
         if range_months(m) <= storage.booked_months(m.business_id, m.chat_id) | taken:
@@ -205,6 +236,14 @@ class Bot:
         # shortcut: in memory, lost on restart (user just sends the link again); persist if that becomes annoying.
         self._waiting: dict[int, tuple[str, str]] = {}
         self._listed: dict[int, list[str]] = {}            # chat -> /pick commands of the last numbered service list
+        self.window: FastWindow | None = None               # set by monitor_loop; /status shows it
+        self._last_ok: dict[int, datetime] = {}            # chat -> last monitor check that worked (/status)
+        self._errors = 0                                   # failed monitor checks since start (rehearsal summary)
+        # Rehearsal (/rehearse): the booking window's pace on the owner's monitors, dry_run only.
+        self.rehearsal_until: datetime | None = None
+        self._rehearsal: dict[str, float] = {}
+        self._reported: dict[int, str] = {}
+        self._wake = asyncio.Event()                       # wakes the monitor loop at once (rehearsal start/stop)
 
     @property
     def api(self) -> BooksyClient:
@@ -330,6 +369,10 @@ class Bot:
             return await self.cmd_book(BookArgs.parse(args))
         if cmd == "/confirm" and len(args) == 4:
             return await booking.book(self.api, self.storage, BookArgs.parse(args), chat_id)
+        if cmd == "/status":
+            return await self.cmd_status(chat_id)
+        if cmd == "/rehearse" and chat_id == self.owner:
+            return self.start_rehearsal(args)
         if cmd == "/list":
             ms = self.storage.chat_monitors(chat_id)
             if not ms:
@@ -531,15 +574,16 @@ class Bot:
             except ApiError as e:
                 log.warning("pre-window check %s: %s", m.chat_id, e)
 
-    async def check_all(self, fast: bool = False) -> None:
-        """fast = inside the booking-opening window: only autobook monitors, no pauses between them."""
+    async def check_all(self, fast: bool = False, dry: bool = False) -> None:
+        """fast = inside the booking-opening window: only autobook monitors, no pauses between them.
+        dry = rehearsal: the owner's monitors (all of them) as if autobook, but dry_run only."""
         expired: set[int] = set()
         # fast: one time_slots per query per cycle, through whichever account asks first (fewer requests from our IP).
         # Not outside the window, so each person's token is still checked there before the window opens.
         fetched: dict[Query, list[str] | None] = {}     # None = failed this cycle: nobody asks again until the next one
         # the owner first: in the same cycle their monitors book before friends' (priority on the same barber)
         for m in sorted(self.storage.active_monitors(), key=lambda m: m.chat_id != self.owner):
-            if (fast and not m.autobook) or m.chat_id in expired:
+            if (dry and m.chat_id != self.owner) or (fast and not (m.autobook or dry)) or m.chat_id in expired:
                 continue
             if m.chat_id != self.owner and not self.is_friend(m.chat_id):
                 continue                                  # kicked during this cycle: no client, no messages
@@ -553,26 +597,32 @@ class Bot:
             try:
                 if fast and q not in fetched:
                     fetched[q] = await find_slots(client, q, retries=0)
-                msg = await check_monitor(client, self.storage, m, slots=fetched.get(q))
+                msg = await check_monitor(client, self.storage, m, slots=fetched.get(q), dry=self._reported if dry else None)
             except SessionExpired:
+                self._errors += 1
                 expired.add(m.chat_id)                        # one person's token: the others go on
                 await self.token_expired(m.chat_id, "Powiadomienia wstrzymane. ")
                 continue
             except RateLimited as e:
+                self._errors += 1
                 log.warning("monitor %s: %s – rest of this cycle skipped", m.id, e)   # do not keep knocking on a 429
                 return
             except ApiChanged as e:
+                self._errors += 1
                 log.error("monitor %s: %s", m.id, e)
                 await self.alert(f"changed:{m.id}", m.chat_id, f"⚠️ Booksy zmienił format odpowiedzi – powiadomienie #{m.id} może nie działać. Szczegóły w logu.")
                 continue
             except ApiError as e:
+                self._errors += 1
                 log.warning("monitor %s: %s", m.id, e)  # outage / limit: try next cycle
                 if fast:
                     fetched.setdefault(q, None)             # the slot fetch failed: same query, same answer this cycle
                 continue
             except Exception:                           # e.g. a slot at a nonexistent DST time: skip this monitor only
+                self._errors += 1
                 log.exception("monitor %s", m.id)
                 continue
+            self._last_ok[m.chat_id] = datetime.now(SERVICE_TZ)
             self._alerted.discard(f"token:{m.chat_id}")
             self._alerted.discard(f"changed:{m.id}")
             if msg:
@@ -582,17 +632,100 @@ class Bot:
                 await asyncio.sleep(random.uniform(2, 5))  # spread requests
 
     async def monitor_loop(self, min_s: float, max_s: float, window: "FastWindow | None" = None) -> None:
+        self.window = window
         while True:
             now = datetime.now(SERVICE_TZ)
-            fast = bool(window and window.active(now))
+            real = bool(window and window.active(now))
+            dry = not real and self.rehearsal_until is not None and now < self.rehearsal_until   # the real window wins
+            t0 = time.monotonic()
             try:
                 if window and window.precheck_due(now) and self._prechecked != now.date():
                     self._prechecked = now.date()
                     await self.pre_window_check()
-                await self.check_all(fast)
+                await self.check_all(real or dry, dry=dry)
+                if dry:
+                    self._rehearsal["cycles"] += 1
+                    self._rehearsal["secs"] += time.monotonic() - t0
+                if self.rehearsal_until and datetime.now(SERVICE_TZ) >= self.rehearsal_until:
+                    await self.end_rehearsal()
             except Exception:                           # the loop must outlive any bug: it is what books on the 1st
                 log.exception("monitor loop")
-            await asyncio.sleep(next_delay(datetime.now(SERVICE_TZ), min_s, max_s, window))
+            if dry:
+                delay = (window.seconds if window else 10) * random.uniform(0.7, 1.3)
+            else:
+                delay = next_delay(datetime.now(SERVICE_TZ), min_s, max_s, window)
+            await self.nap(delay)
+
+    async def nap(self, seconds: float) -> None:
+        """Sleep until the next check; /rehearse wakes the loop at once."""
+        self._wake.clear()
+        try:
+            await asyncio.wait_for(self._wake.wait(), seconds)
+        except TimeoutError:
+            pass
+
+    def start_rehearsal(self, args: list[str]) -> str:
+        if args[:1] == ["stop"]:
+            if not self.rehearsal_until:
+                return "Próba nie trwa."
+            self.rehearsal_until = datetime.now(SERVICE_TZ)
+            self._wake.set()
+            return "🧪 Kończę próbę – podsumowanie za chwilę."
+        minutes = int(args[0]) if args and args[0].isdigit() else 10
+        if not 1 <= minutes <= 30:
+            raise ValueError("próba trwa 1–30 minut")
+        if not self.storage.chat_monitors(self.owner):
+            return "Najpierw ustaw powiadomienie dla salonu (wyślij link) – próba sprawdza Twoje aktywne powiadomienia."
+        self.rehearsal_until = datetime.now(SERVICE_TZ) + timedelta(minutes=minutes)
+        self._rehearsal = {"cycles": 0, "secs": 0.0, "errors": self._errors}
+        self._reported = {}
+        self._wake.set()
+        every = self.window.seconds if self.window else 10
+        return (f"🧪 Próba okna zapisów przez {minutes} min: co ~{every:.0f} s sprawdzam Twoje powiadomienia "
+                "(wszystkie, także bez 🤖) jak w oknie, ale <b>nic nie rezerwuję</b> – tylko sprawdzam termin (dry_run). "
+                "Napiszę, co bym zarezerwował, a na końcu podsumowanie. Przerwiesz: /rehearse stop")
+
+    async def end_rehearsal(self) -> None:
+        st, self.rehearsal_until = self._rehearsal, None
+        cycles = int(st.get("cycles", 0))
+        avg = st.get("secs", 0.0) / cycles if cycles else 0.0
+        found = len(self._reported)
+        await self.send(self.owner, f"🧪 Próba zakończona: {cycles} cykli, średnio {avg:.1f} s na cykl, "
+                                    f"błędy: {self._errors - int(st.get('errors', 0))}. "
+                                    + (f"Terminy do rezerwacji znalezione w {found} powiadomieniach." if found
+                                       else "Nie było wolnych terminów do rezerwacji."))
+
+    async def cmd_status(self, chat_id: int) -> str:
+        now = datetime.now(SERVICE_TZ)
+        lines = ["📊 <b>Stan bota</b>"]
+        last = self._last_ok.get(chat_id)
+        lines.append(f"• Ostatnie udane sprawdzenie: {last:%d.%m %H:%M} ({int((now - last).total_seconds() // 60)} min temu)"
+                     if last else "• Ostatnie udane sprawdzenie: jeszcze nie było od startu bota")
+        try:
+            await self.api.my_bookings()
+            token = "✅ działa (sprawdzone teraz)"
+        except SessionExpired:
+            token = "❌ wygasł – /login"
+        except ApiError as e:
+            token = f"⚠️ nie udało się sprawdzić ({e.status or 'brak połączenia'})"
+        if set_at := self.storage.token_set_at(chat_id):
+            token += f", ustawiony {set_at.astimezone(SERVICE_TZ):%d.%m %H:%M}"
+        lines.append(f"• Token Booksy: {token}")
+        w = self.window
+        if w:
+            nxt = w.next_start(now)
+            when = "trwa teraz" if w.active(now) else (f"najbliższe: {fmt_slot(nxt.isoformat())}" if nxt else "brak w 2 miesiące")
+            lines.append(f"• Okno zapisów: dni {w.first_day}–{w.last_day}, {w.start:%H:%M}–{w.end:%H:%M}, "
+                         f"co {w.seconds:.0f} s – {when}")
+        else:
+            lines.append("• Okno zapisów: nie ustawione (FAST_WINDOW)")
+        if self.rehearsal_until:
+            lines.append(f"• 🧪 Próba trwa do {self.rehearsal_until:%H:%M}")
+        ms = self.storage.chat_monitors(chat_id)
+        auto = [m for m in ms if m.autobook]
+        lines.append(f"• Powiadomienia: {len(ms)} (/list), autorezerwacje: " + (str(len(auto)) if auto else "brak"))
+        lines += [describe(m) for m in auto]
+        return "\n".join(lines)
 
     async def updates_loop(self) -> None:
         offset = None

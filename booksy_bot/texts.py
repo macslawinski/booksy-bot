@@ -19,6 +19,7 @@ HELP = """<b>Booksy bot</b> – szuka wolnych terminów, powiadamia o nowych i r
 <b>Komendy</b>
 /list – aktywne powiadomienia (z przyciskiem „Zakończ”)
 /visits – Twoje wizyty w Booksy (z przyciskiem „Odwołaj”)
+/status – czy bot działa, token, najbliższe okno zapisów
 /login – podłącz konto Booksy z telefonu
 /help – ta pomoc
 
@@ -91,9 +92,11 @@ OWNER_HELP = """
 Znajomy pisze do bota /start i podaje hasło (BOT_PASSWORD na serwerze); 3 złe próby = blokada.
 Znajomy korzysta z własnego konta Booksy, ale z Twojego IP – ryzyko blokady dotyczy też Ciebie.
 /users – lista, /kick ID – usuń (z tokenem i powiadomieniami).
-Nowy token Booksy z telefonu: /login."""
+Nowy token Booksy z telefonu: /login.
+/rehearse [minuty] – próba okna zapisów: tempo jak w oknie, ale nic nie rezerwuje (stop: /rehearse stop)."""
 
 BOT_COMMANDS = [{"command": "list", "description": "Aktywne powiadomienia"},
                 {"command": "visits", "description": "Twoje wizyty (odwołanie)"},
+                {"command": "status", "description": "Stan bota, token, okno zapisów"},
                 {"command": "login", "description": "Podłącz konto Booksy z telefonu"},
                 {"command": "help", "description": "Jak korzystać z bota"}]

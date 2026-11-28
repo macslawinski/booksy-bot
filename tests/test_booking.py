@@ -402,3 +402,51 @@ def test_visit_list_fetched_across_a_booking_is_not_cached():
     client._http.request = booking_meanwhile
     asyncio.run(client.my_bookings())
     assert client._bookings is None
+
+
+def test_autobook_tries_the_next_slot_at_once_when_the_first_was_taken(auto_bot):
+    from test_bot import SLOTS, add
+    from booksy_bot.bot import check_monitor
+    _, storage = auto_bot
+    m = add(storage, autobook=True, date_from="2026-11-27", date_to="2026-11-28")
+    booked = []
+    def handler(req):
+        if req.url.path.endswith("/time_slots"):
+            return httpx.Response(200, json=SLOTS)
+        if req.url.path.endswith("/me/bookings"):
+            return httpx.Response(200, json={"bookings": []})
+        at = json.loads(req.content)["subbookings"][0]["booked_from"]
+        if at == "2026-11-27 14:00":                              # someone was faster
+            return httpx.Response(400, json={"errors": [{"code": "matcher_conflict"}]})
+        resp = copy.deepcopy(DRY)
+        resp["appointment"]["booked_from"] = at.replace(" ", "T")
+        if req.url.path == BOOK_PATH:
+            booked.append(at)
+            resp["appointment"]["appointment_uid"] = 1
+        return httpx.Response(201, json=resp)
+    from conftest import make_client
+    msg = asyncio.run(check_monitor(make_client(handler), storage, m, NOW.date()))
+    assert "Zarezerwowano 27.11 17:00" in msg and booked == ["2026-11-27 17:00"]   # same cycle, the next free slot
+
+
+def test_rehearsal_books_nothing_and_reports_each_pick_once(auto_bot):
+    from test_bot import SLOTS, add
+    from booksy_bot.bot import check_monitor
+    _, storage = auto_bot
+    m = add(storage, date_from="2026-11-27", date_to="2026-11-28")             # a plain notification, no 🤖
+    client, calls = booksy(slots=SLOTS)
+    reported = {}
+    msg = asyncio.run(check_monitor(client, storage, m, NOW.date(), dry=reported))
+    assert "🧪 Próba: zarezerwowałbym pt 27.11, 14:00" in msg and "Nic nie zostało zarezerwowane" in msg
+    assert asyncio.run(check_monitor(client, storage, m, NOW.date(), dry=reported)) is None   # same pick: quiet
+    assert paths(calls) == [DRY_PATH]                             # one dry_run, never the real POST
+    assert storage.active_monitors()[0].autobook == 0             # nothing switched on or off
+
+
+def test_fast_window_next_start():
+    from booksy_bot.bot import FastWindow
+    w = FastWindow.parse("1-3 19:55-20:35 10")
+    at = lambda m, d, hh, mm: datetime(2026, m, d, hh, mm, tzinfo=SERVICE_TZ)
+    assert w.next_start(at(11, 28, 12, 0)) == at(12, 1, 19, 55)
+    assert w.next_start(at(12, 1, 20, 0)) == at(12, 1, 19, 55)    # running now
+    assert w.next_start(at(12, 3, 20, 40)) == at(1, 1, 19, 55).replace(year=2027)
